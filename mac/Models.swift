@@ -31,15 +31,28 @@ let activeLevel = 0.1
 
 func makeTrack(_ e: [Double], _ hz: [Double?], _ x: (Int) -> Double) -> [Pt] {
     let v = hz.compactMap { $0 }.sorted(), med = v.isEmpty ? nil : v[v.count / 2]
-    var t = e.indices.map { i in Pt(x: x(i), e: e[i], st: i < hz.count ? hz[i].flatMap { h in med.map { 12 * log2(h / $0) } } : nil) }
-    let raw = t.map(\.st)
-    for i in t.indices {
-        guard let s = raw[i] else { continue }
-        if abs(s) > 12 { t[i].st = nil }
-        else if i > 0, i < t.count - 1, let a = raw[i - 1], let b = raw[i + 1], abs(s - a) > 5, abs(s - b) > 5 { t[i].st = nil }
-    }
-    return t
+    let st = smoothPitch(e.indices.map { i -> Double? in
+        guard i < hz.count, let h = hz[i], let m = med else { return nil }
+        let s = 12 * log2(h / m), f = s > 8 ? s - 12 : s < -8 ? s + 12 : s
+        return abs(f) > 12 ? nil : f
+    })
+    return e.indices.map { Pt(x: x($0), e: e[$0], st: st[$0]) }
 }
+
+func smoothPitch(_ v: [Double?]) -> [Double?] {
+    var out = v, i = 0
+    while i < v.count {
+        guard v[i] != nil else { i += 1; continue }
+        var j = i
+        while j < v.count, v[j] != nil { j += 1 }
+        let m = (i..<j).map { k in (max(i, k - 2)...min(j - 1, k + 2)).compactMap { v[$0] }.sorted()[(min(j - 1, k + 2) - max(i, k - 2) + 1) / 2] }
+        for k in i..<j { out[k] = j - i < 4 ? nil : (m[max(0, k - i - 1)] + m[k - i] + m[min(j - i - 1, k - i + 1)]) / 3 }
+        i = j
+    }
+    return out
+}
+
+func smoothLoud(_ t: [Pt]) -> [Double] { t.indices.map { i in let r = max(0, i - 2)...min(t.count - 1, i + 2); return t[r].map(\.e).reduce(0, +) / Double(r.count) } }
 
 func onsetIndex(_ e: [Double]) -> Int { e.firstIndex { $0 > activeLevel } ?? 0 }
 func onsetX(_ t: [Pt]) -> Double { t.isEmpty ? 0 : t[onsetIndex(t.map(\.e))].x }

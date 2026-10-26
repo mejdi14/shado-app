@@ -468,7 +468,7 @@ struct VoiceMapView: View {
                         stat("Speaker", describe(src))
                         stat("You" + (s.live != nil && s.recording ? " · live" : "") + (sp != 1 ? " · adjusted for \(speedLabel(sp))" : ""), !yd.isEmpty ? yd : you?.isEmpty == false ? "listening…" : s.recording ? "start speaking…" : "Record a take to compare.")
                     }
-                }
+                } else if s.voiceFailed { muted("Couldn't load the speaker's voice map. Quit Shadow Studio and any Terminal window running it, then open it again.") }
             }
         }
     }
@@ -504,9 +504,9 @@ struct VoiceMapView: View {
             ctx.fill(p, with: .color(Color.ink.opacity(0.07)))
         }
         if let you, !you.isEmpty {
-            var p = Path()
-            for (i, q) in you.enumerated() { let pt = CGPoint(x: X(q.x), y: E(q.e)); if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) } }
-            ctx.stroke(p, with: .color(Color.violet.opacity(0.35)), lineWidth: 1)
+            var p = Path(), se = smoothLoud(you)
+            for (i, q) in you.enumerated() { let pt = CGPoint(x: X(q.x), y: E(se[i])); if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) } }
+            ctx.stroke(p, with: .color(Color.violet.opacity(0.25)), lineWidth: 1)
         }
         line(src, Color.ink.opacity(0.75), 2.4)
         line(you ?? [], .violet, 2)

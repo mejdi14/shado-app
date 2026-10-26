@@ -22,6 +22,7 @@ enum Mode: String, CaseIterable {
     @Published var busy: Busy?
     @Published var toast: String?
     @Published var voice: VoiceMap?
+    @Published var voiceFailed = false
     @Published var isPlaying = false
     @Published var isTakePlaying = false
     @Published var recording = false
@@ -91,12 +92,13 @@ enum Mode: String, CaseIterable {
 
     func phraseChanged() {
         stopPlayback(); setMode(mode, force: true)
-        voice = nil
+        voice = nil; voiceFailed = false
         guard let l = lesson else { return }
         let id = l.id, ix = index
         if live?.key != "\(id):\(ix)" { live = nil }
         Task {
-            guard let v = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)"), lesson?.id == id, index == ix, let ph = phrase else { return }
+            guard let v = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)") else { if lesson?.id == id, index == ix { voiceFailed = true }; return }
+            guard lesson?.id == id, index == ix, let ph = phrase else { return }
             let src = makeTrack(v.source.energy, v.source.pitch) { Double($0) * v.hop }
             let sp = v.take?.speed ?? 1
             var you: [Pt]? = nil, shift = 0.0
