@@ -1,0 +1,8 @@
+fastapi>=0.115,<1
+uvicorn>=0.34,<1
+python-multipart>=0.0.20,<1
+faster-whisper>=1.1,<2
+numpy>=2,<3
+scipy>=1.14,<2
+yt-dlp[default]>=2026.10.14
+av>=11,<17
