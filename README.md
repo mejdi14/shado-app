@@ -24,6 +24,12 @@ The local speech model and dependencies are already installed in this folder. Ke
 
 A built-in Mac voice sample is included to try the workflow. It is labelled as a sample, not a real YouTuber.
 
+## The voice map
+
+Under each phrase, the voice map shows how the speaker said it: their relative pitch (the line), loudness (the shaded shape), pauses (tinted bands with their length), and each word placed where it is spoken. Bold words are the loudest ones, which are often, but not always, the stressed words. A summary line gives the speaking time, the pauses and whether the phrase ends rising, falling or level.
+
+While you record, your own pitch, loudness and pauses are drawn over the speaker's in real time from the microphone, so you can see where you rise, fall or pause differently. In Shadow mode your line follows the original as it plays; in Listen and Recall it starts when you start speaking. After feedback is ready, your saved take stays on the map until you record again. The live view is analysed on this Mac and is a visual guide, not a score.
+
 ## What the feedback means
 
 - **Word accuracy** compares the recognized words in your take with the phrase text. It can flag missing or different words. It is not a phoneme-level pronunciation grade, and speech recognition can make mistakes.
