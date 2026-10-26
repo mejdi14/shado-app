@@ -21,7 +21,7 @@ func fmt(_ n: Double) -> String { String(format: "%02d:%02d", Int(n) / 60, Int(n
 // MARK: Voice map analysis (relative pitch in semitones, loudness 0–1, x in phrase seconds)
 
 struct Pt { let x: Double; let e: Double; var st: Double? }
-struct VoiceMap { let src: [Pt]; let pauses: [(Double, Double)]; let stress: Set<Int>; let you: [Pt]?; let youInfo: String; let shift: Double; let scale: Double; let takeSpeed: Double }
+struct VoiceMap { let src: [Pt]; let pauses: [(Double, Double)]; let stress: Set<Int>; let you: [Pt]?; let shift: Double; let scale: Double; let takeSpeed: Double }
 struct LiveTrack {
     let key: String; let shadow: Bool; let speed: Double
     var x: Double? = nil; var peak = 0.02; var frames: [(x: Double, rms: Double, hz: Double?)] = []
@@ -77,14 +77,7 @@ func ending(_ t: [Pt]) -> String {
     guard v.count >= 12 else { return "" }
     let m = { (a: ArraySlice<Double>) in a.reduce(0, +) / Double(a.count) }
     let d = m(v.suffix(5)) - m(v.dropLast(5).suffix(10))
-    return d > 1.2 ? "rising ↗" : d < -1.2 ? "falling ↘" : "level →"
-}
-
-func describe(_ t: [Pt]) -> String {
-    guard let a = t.firstIndex(where: { $0.e > activeLevel }), let b = t.lastIndex(where: { $0.e > activeLevel }) else { return "" }
-    let ps = pauses(t), end = ending(t)
-    let p = ps.isEmpty ? "no pauses" : "\(ps.count) pause\(ps.count > 1 ? "s" : "") (" + ps.map { String(format: "%.1fs", $0.1 - $0.0) }.joined(separator: ", ") + ")"
-    return String(format: "%.1fs of speech · ", t[b].x - t[a].x) + p + (end.isEmpty ? "" : " · ends " + end)
+    return d > 1.2 ? "goes up ↗" : d < -1.2 ? "goes down ↘" : "stays flat →"
 }
 
 func stressed(_ t: [Pt], _ words: [Word], _ start: Double) -> Set<Int> {

@@ -101,16 +101,16 @@ enum Mode: String, CaseIterable {
             guard lesson?.id == id, index == ix, let ph = phrase else { return }
             let src = makeTrack(v.source.energy, v.source.pitch) { Double($0) * v.hop }
             let sp = v.take?.speed ?? 1
-            var you: [Pt]? = nil, youInfo = "", shift = 0.0, scale = sp
+            var you: [Pt]? = nil, shift = 0.0, scale = sp
             if let t = v.take {
                 let raw = makeTrack(t.energy, t.pitch) { Double($0) * v.hop * sp }, len = ph.end - ph.start
-                youInfo = describe(raw); shift = onsetX(src) - onsetX(raw)
+                shift = onsetX(src) - onsetX(raw)
                 if let (a, b) = speechSpan(src), let (c, d) = speechSpan(raw), d > c { scale = (b - a) * sp / (d - c); shift = a - c / sp * scale }
                 let sc = scale, sh = shift
                 you = raw.map { Pt(x: $0.x / sp * sc + sh, e: $0.e, st: $0.st) }.filter { $0.x >= 0 && $0.x <= len }
                 if !recording { live = nil }
             }
-            voice = VoiceMap(src: src, pauses: pauses(src), stress: stressed(src, ph.words ?? [], ph.start), you: you, youInfo: youInfo, shift: shift, scale: scale, takeSpeed: sp)
+            voice = VoiceMap(src: src, pauses: pauses(src), stress: stressed(src, ph.words ?? [], ph.start), you: you, shift: shift, scale: scale, takeSpeed: sp)
         }
     }
 
