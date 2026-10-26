@@ -6,6 +6,10 @@ A personal English shadowing app that runs on this Mac. No account, API key, sub
 
 Double-click **Start Shadow Studio.command** in Finder. It opens the studio in your browser at **http://127.0.0.1:8765**. Keep its Terminal window open while practising. Press Control-C in that window to stop.
 
+## Mac app
+
+Double-click **Build Mac App.command** once to create **Shadow Studio.app** in this folder. It is a native SwiftUI app (no browser or web view): the same practice loop, library, import, phrase editing and feedback, with native playback and microphone recording. Behind the scenes it starts the local Python engine from this folder (transcription, YouTube import, scoring) and stops it when you quit, so scores and your **data/** folder are identical to the browser version. Microphone access is requested the first time you record. Drag the app to the Dock or Applications; keep this folder where it is (rebuild the app if you move it). Building needs macOS 13+ and the Xcode Command Line Tools (`xcode-select --install`). If macOS blocks the app on first launch, right-click it and choose Open. If it can't start, it shows why, and the engine log is at `~/Library/Logs/Shadow Studio.log`.
+
 The local speech model and dependencies are already installed in this folder. Keep the whole **Shadow Studio** folder together. The app listens only on this Mac.
 
 ## Your practice loop
