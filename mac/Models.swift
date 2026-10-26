@@ -21,7 +21,7 @@ func fmt(_ n: Double) -> String { String(format: "%02d:%02d", Int(n) / 60, Int(n
 // MARK: Voice map analysis (relative pitch in semitones, loudness 0–1, x in phrase seconds)
 
 struct Pt { let x: Double; let e: Double; var st: Double? }
-struct VoiceMap { let src: [Pt]; let pauses: [(Double, Double)]; let stress: Set<Int>; let you: [Pt]?; let shift: Double; let takeSpeed: Double }
+struct VoiceMap { let src: [Pt]; let pauses: [(Double, Double)]; let stress: Set<Int>; let you: [Pt]?; let youInfo: String; let shift: Double; let scale: Double; let takeSpeed: Double }
 struct LiveTrack {
     let key: String; let shadow: Bool; let speed: Double
     var x: Double? = nil; var peak = 0.02; var frames: [(x: Double, rms: Double, hz: Double?)] = []
@@ -56,6 +56,10 @@ func smoothLoud(_ t: [Pt]) -> [Double] { t.indices.map { i in let r = max(0, i -
 
 func onsetIndex(_ e: [Double]) -> Int { e.firstIndex { $0 > activeLevel } ?? 0 }
 func onsetX(_ t: [Pt]) -> Double { t.isEmpty ? 0 : t[onsetIndex(t.map(\.e))].x }
+func speechSpan(_ t: [Pt]) -> (Double, Double)? {
+    guard let a = t.firstIndex(where: { $0.e > activeLevel }), let b = t.lastIndex(where: { $0.e > activeLevel }) else { return nil }
+    return (t[a].x, t[b].x)
+}
 
 func pauses(_ t: [Pt]) -> [(Double, Double)] {
     guard let a = t.firstIndex(where: { $0.e > activeLevel }), let b = t.lastIndex(where: { $0.e > activeLevel }) else { return [] }

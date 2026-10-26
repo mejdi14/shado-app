@@ -463,7 +463,7 @@ struct VoiceMapView: View {
                     Text("Bold words are the loudest").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 if let src = s.voice?.src {
-                    let sp = s.live?.speed ?? s.voice?.takeSpeed ?? 1, yd = describe(you ?? [])
+                    let sp = s.live?.speed ?? s.voice?.takeSpeed ?? 1, yd = s.live != nil ? describe(you ?? []) : s.voice?.youInfo ?? ""
                     VStack(alignment: .leading, spacing: 3) {
                         stat("Speaker", describe(src))
                         stat("You" + (s.live != nil && s.recording ? " · live" : "") + (sp != 1 ? " · adjusted for \(speedLabel(sp))" : ""), !yd.isEmpty ? yd : you?.isEmpty == false ? "listening…" : s.recording ? "start speaking…" : "Record a take to compare.")
@@ -487,7 +487,7 @@ struct VoiceMapView: View {
             for q in t {
                 guard let st = q.st else { continue }
                 let pt = CGPoint(x: X(q.x), y: Y(st))
-                if let pr = prev, q.x - pr < 0.07 { p.addLine(to: pt) } else { p.move(to: pt) }
+                if let pr = prev, q.x - pr < 0.2 { p.addLine(to: pt) } else { p.move(to: pt) }
                 prev = q.x
             }
             ctx.stroke(p, with: .color(c), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
@@ -522,7 +522,7 @@ struct VoiceMapView: View {
         var ph: Double? = nil
         if s.recording, let L = s.live { ph = L.x }
         else if s.isPlaying, let p = s.original { ph = p.currentTime - phrase.start }
-        else if s.isTakePlaying, s.live == nil, let v, v.you != nil, let t = s.takePlayer { ph = t.currentTime * v.takeSpeed + v.shift }
+        else if s.isTakePlaying, s.live == nil, let v, v.you != nil, let t = s.takePlayer { ph = t.currentTime * v.scale + v.shift }
         if let ph, ph >= 0 { ctx.stroke(Path { $0.move(to: CGPoint(x: X(ph), y: top - 4)); $0.addLine(to: CGPoint(x: X(ph), y: bot + 12)) }, with: .color(Color.ink.opacity(0.5)), lineWidth: 1) }
     }
 }
@@ -600,7 +600,7 @@ struct FeedbackPanel: View {
                 }.frame(maxWidth: .infinity).padding(.vertical, 28)
             }
             DisclosureGroup {
-                Text("These are practice estimates, not validated pronunciation grades. Word accuracy compares speech recognition with the phrase text; it does not assess individual speech sounds. Rhythm uses duration and loudness patterns. Intonation compares relative pitch contours; music and noisy recordings can affect it. Audio extraction keeps background sounds—it does not isolate the speaker. The voice map shows relative pitch and loudness over time; pauses are quiet gaps of 0.2 seconds or more, and bold words are simply the loudest ones, which are often but not always the stressed words.").font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                Text("These are practice estimates, not validated pronunciation grades. Word accuracy compares speech recognition with the phrase text; it does not assess individual speech sounds. Rhythm uses duration and loudness patterns. Intonation compares relative pitch contours; music and noisy recordings can affect it. Audio extraction keeps background sounds—it does not isolate the speaker. The voice map shows relative pitch and loudness over time; pauses are quiet gaps of 0.2 seconds or more, and bold words are simply the loudest ones, which are often but not always the stressed words. A saved take is stretched to the speaker's length so the shapes line up; the summary shows your real timing.").font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
             } label: { Text("How feedback works").font(.system(size: 12, weight: .medium)) }
         }.padding(20)
     }
