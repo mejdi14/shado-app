@@ -21,7 +21,7 @@ enum Mode: String, CaseIterable {
     @Published var speed = 1.0 { didSet { original?.rate = Float(speed) } }
     @Published var busy: Busy?
     @Published var toast: String?
-    @Published var wave: [Double] = []
+    @Published var voice: VoiceMap?
     @Published var isPlaying = false
     @Published var isTakePlaying = false
     @Published var recording = false
@@ -41,6 +41,8 @@ enum Mode: String, CaseIterable {
     var takePlayer: AVAudioPlayer?
     var recorder: AVAudioRecorder?
     var recordFile: URL?
+    var engine: AVAudioEngine?
+    var live: LiveTrack?
     var pollTask: Task<Void, Never>?
     var recordTask: Task<Void, Never>?
     var autoStop: Task<Void, Never>?
@@ -89,10 +91,23 @@ enum Mode: String, CaseIterable {
 
     func phraseChanged() {
         stopPlayback(); setMode(mode, force: true)
-        wave = []
+        voice = nil
         guard let l = lesson else { return }
         let id = l.id, ix = index
-        Task { if let v = try? await api.get([Double].self, "/api/wave/\(id)/\(ix)"), lesson?.id == id, index == ix { wave = v } }
+        if live?.key != "\(id):\(ix)" { live = nil }
+        Task {
+            guard let v = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)"), lesson?.id == id, index == ix, let ph = phrase else { return }
+            let src = makeTrack(v.source.energy, v.source.pitch) { Double($0) * v.hop }
+            let sp = v.take?.speed ?? 1
+            var you: [Pt]? = nil, shift = 0.0
+            if let t = v.take {
+                shift = onsetX(src) - Double(onsetIndex(t.energy)) * v.hop * sp
+                let sh = shift
+                you = makeTrack(t.energy, t.pitch) { Double($0) * v.hop * sp + sh }
+                if !recording { live = nil }
+            }
+            voice = VoiceMap(src: src, pauses: pauses(src), stress: stressed(src, ph.words ?? [], ph.start), you: you, shift: shift, takeSpeed: sp)
+        }
     }
 
     func select(_ i: Int) {
@@ -191,6 +206,7 @@ enum Mode: String, CaseIterable {
         }
         recorder = r; recordFile = url
         recording = true; starting = false; recordSeconds = 0
+        startLive()
         let began = Date()
         recordTask = Task { while !Task.isCancelled { recordSeconds = Date().timeIntervalSince(began); try? await Task.sleep(nanoseconds: 200_000_000) } }
         autoStop = Task { try? await Task.sleep(nanoseconds: 34_000_000_000); if !Task.isCancelled { stopRecording() } }
@@ -205,10 +221,40 @@ enum Mode: String, CaseIterable {
     func stopRecording() {
         guard recording, !stopping else { return }
         stopping = true; recording = false
-        recordTask?.cancel(); autoStop?.cancel(); stopPlayback()
+        recordTask?.cancel(); autoStop?.cancel(); stopPlayback(); stopLive()
         recorder?.stop(); recorder = nil
         let url = recordFile
         Task { if let url { await finishRecording(url) }; stopping = false }
+    }
+
+    func startLive() {
+        guard let l = lesson else { return }
+        live = LiveTrack(key: "\(l.id):\(index)", shadow: mode == .shadow, speed: mode == .shadow ? speed : 1)
+        let e = AVAudioEngine(), input = e.inputNode, format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { live = nil; return }
+        let sr = format.sampleRate, acc = SampleBuffer()
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
+            guard let ch = buffer.floatChannelData?[0] else { return }
+            let results = acc.add(UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)), sr)
+            if !results.isEmpty { Task { @MainActor in self?.addLive(results, 1024 / sr) } }
+        }
+        do { try e.start(); engine = e } catch { input.removeTap(onBus: 0); live = nil }
+    }
+
+    func stopLive() { engine?.inputNode.removeTap(onBus: 0); engine?.stop(); engine = nil }
+
+    func addLive(_ results: [(rms: Double, hz: Double?)], _ dt: Double) {
+        guard recording, var L = live else { return }
+        for (k, r) in results.enumerated() {
+            if L.shadow {
+                if isPlaying, let p = original, let ph = phrase { L.x = p.currentTime - ph.start - Double(results.count - 1 - k) * dt * L.speed }
+                else if let x = L.x { L.x = x + dt * L.speed }
+            } else if let x = L.x { L.x = x + dt }
+            else if r.hz != nil && r.rms > 0.01 { L.x = onsetX(voice?.src ?? []) }
+            guard let x = L.x else { continue }
+            L.peak = max(L.peak, r.rms); L.frames.append((x, r.rms, r.hz))
+        }
+        live = L
     }
 
     func finishRecording(_ url: URL) async {
@@ -288,7 +334,7 @@ enum Mode: String, CaseIterable {
         guard let l = lesson else { return }
         await guarded {
             _ = try await api.send("/api/lesson/" + l.id, method: "DELETE")
-            stopPlayback(); lesson = nil; original = nil; wave = []
+            stopPlayback(); lesson = nil; original = nil; voice = nil; live = nil
             UserDefaults.standard.removeObject(forKey: "shadow-lesson")
             try await refreshLibrary()
         }

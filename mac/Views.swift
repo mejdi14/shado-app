@@ -383,7 +383,7 @@ struct PracticePanel: View {
                 Text(phraseText(phrase)).font(.system(size: 26)).tracking(-0.3).lineSpacing(4).textSelection(.enabled).frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
                 if phrase.latest != nil { HStack(spacing: 14) { legendDot(.good, "Heard clearly"); legendDot(.warn, "Not recognised"); Spacer() } }
             }
-            WaveView(values: s.wave, active: s.isPlaying).frame(height: 56)
+            VoiceMapView(phrase: phrase)
         }.padding(24).panel(16)
     }
 
@@ -449,18 +449,81 @@ struct PracticePanel: View {
     }
 }
 
-struct WaveView: View {
-    let values: [Double]
-    var active = false
+struct VoiceMapView: View {
+    @EnvironmentObject var s: Store
+    let phrase: Phrase
     var body: some View {
-        Canvas { ctx, size in
-            let gap = size.width / CGFloat(max(values.count, 1))
-            let shade: GraphicsContext.Shading = active ? .linearGradient(Gradient(colors: [.violet, .rose]), startPoint: .zero, endPoint: CGPoint(x: size.width, y: 0)) : .color(Color.ink.opacity(0.28))
-            for (i, v) in values.enumerated() {
-                let h = max(3, CGFloat(v) * (size.height - 4))
-                ctx.fill(Path(roundedRect: CGRect(x: CGFloat(i) * gap, y: (size.height - h) / 2, width: max(1.5, gap * 0.55), height: h), cornerRadius: 1.5), with: shade)
+        TimelineView(.animation(minimumInterval: nil, paused: !(s.recording || s.isPlaying || s.isTakePlaying))) { _ in
+            let you = s.live?.track ?? s.voice?.you
+            VStack(alignment: .leading, spacing: 10) {
+                Canvas { ctx, size in draw(ctx, size, you) }.frame(height: 150)
+                HStack(spacing: 14) {
+                    key(Color.ink.opacity(0.75), "Speaker pitch"); key(Color.ink.opacity(0.12), "Loudness"); key(Color.rose.opacity(0.25), "Pause"); key(.violet, "You")
+                    Spacer(minLength: 0)
+                    Text("Bold words are the loudest").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if let src = s.voice?.src {
+                    let sp = s.live?.speed ?? s.voice?.takeSpeed ?? 1, yd = describe(you ?? [])
+                    VStack(alignment: .leading, spacing: 3) {
+                        stat("Speaker", describe(src))
+                        stat("You" + (s.live != nil && s.recording ? " · live" : "") + (sp != 1 ? " · adjusted for \(speedLabel(sp))" : ""), !yd.isEmpty ? yd : you?.isEmpty == false ? "listening…" : s.recording ? "start speaking…" : "Record a take to compare.")
+                    }
+                }
             }
         }
+    }
+
+    func key(_ c: Color, _ t: String) -> some View { HStack(spacing: 5) { RoundedRectangle(cornerRadius: 2).fill(c).frame(width: 12, height: 6); Text(t).font(.system(size: 11)).foregroundStyle(.secondary) } }
+    func stat(_ label: String, _ value: String) -> some View { HStack(spacing: 6) { Text(label).font(.system(size: 12, weight: .semibold)); muted(value) } }
+
+    func draw(_ ctx: GraphicsContext, _ size: CGSize, _ you: [Pt]?) {
+        let v = s.voice, src = v?.src ?? [], span = max(phrase.end - phrase.start, (you?.last?.x ?? 0) + 0.1)
+        let w = size.width, h = size.height, top: CGFloat = 18, bot = h - 30, mid = (top + bot) / 2
+        func X(_ x: Double) -> CGFloat { CGFloat(x / span) * w }
+        func Y(_ st: Double) -> CGFloat { mid - CGFloat(max(-10, min(10, st))) * (bot - top) / 22 }
+        func E(_ e: Double) -> CGFloat { bot - CGFloat(e) * (bot - top) * 0.6 }
+        func line(_ t: [Pt], _ c: Color, _ width: CGFloat) {
+            var p = Path(), prev: Double? = nil
+            for q in t {
+                guard let st = q.st else { continue }
+                let pt = CGPoint(x: X(q.x), y: Y(st))
+                if let pr = prev, q.x - pr < 0.07 { p.addLine(to: pt) } else { p.move(to: pt) }
+                prev = q.x
+            }
+            ctx.stroke(p, with: .color(c), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+        }
+        for (a, b) in v?.pauses ?? [] {
+            ctx.fill(Path(CGRect(x: X(a), y: top - 4, width: X(b) - X(a), height: bot - top + 4)), with: .color(Color.rose.opacity(0.09)))
+            ctx.draw(Text(String(format: "%.1fs", b - a)).font(.system(size: 9, weight: .medium)).foregroundColor(.rose), at: CGPoint(x: X((a + b) / 2), y: top - 5), anchor: .bottom)
+        }
+        ctx.stroke(Path { $0.move(to: CGPoint(x: 0, y: mid)); $0.addLine(to: CGPoint(x: w, y: mid)) }, with: .color(.line), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+        if let f = src.first, let l = src.last {
+            var p = Path(); p.move(to: CGPoint(x: X(f.x), y: bot))
+            for q in src { p.addLine(to: CGPoint(x: X(q.x), y: E(q.e))) }
+            p.addLine(to: CGPoint(x: X(l.x), y: bot))
+            ctx.fill(p, with: .color(Color.ink.opacity(0.07)))
+        }
+        if let you, !you.isEmpty {
+            var p = Path()
+            for (i, q) in you.enumerated() { let pt = CGPoint(x: X(q.x), y: E(q.e)); if i == 0 { p.move(to: pt) } else { p.addLine(to: pt) } }
+            ctx.stroke(p, with: .color(Color.violet.opacity(0.35)), lineWidth: 1)
+        }
+        line(src, Color.ink.opacity(0.75), 2.4)
+        line(you ?? [], .violet, 2)
+        for (a, b) in pauses(you ?? []) { ctx.fill(Path(CGRect(x: X(a), y: bot + 3, width: X(b) - X(a), height: 3)), with: .color(Color.violet.opacity(0.5))) }
+        var last: CGFloat = -1
+        for (i, wd) in (phrase.words ?? []).enumerated() {
+            let a = X(wd.start - phrase.start), b = X(wd.end - phrase.start), c = (a + b) / 2, em = v?.stress.contains(i) ?? false
+            ctx.fill(Path(CGRect(x: a, y: bot + 9, width: max(1, b - a - 1), height: 2)), with: .color(em ? Color.ink.opacity(0.6) : Color.line))
+            let txt = ctx.resolve(Text(wd.word.trimmingCharacters(in: .whitespaces)).font(.system(size: 10, weight: em ? .semibold : .regular)).foregroundColor(em ? .ink : .secondary))
+            let tw = txt.measure(in: size).width
+            if c - tw / 2 > last + 3 { ctx.draw(txt, at: CGPoint(x: c, y: h - 3), anchor: .bottom); last = c + tw / 2 }
+        }
+        var ph: Double? = nil
+        if s.recording, let L = s.live { ph = L.x }
+        else if s.isPlaying, let p = s.original { ph = p.currentTime - phrase.start }
+        else if s.isTakePlaying, s.live == nil, let v, v.you != nil, let t = s.takePlayer { ph = t.currentTime * v.takeSpeed + v.shift }
+        if let ph, ph >= 0 { ctx.stroke(Path { $0.move(to: CGPoint(x: X(ph), y: top - 4)); $0.addLine(to: CGPoint(x: X(ph), y: bot + 12)) }, with: .color(Color.ink.opacity(0.5)), lineWidth: 1) }
     }
 }
 
@@ -537,7 +600,7 @@ struct FeedbackPanel: View {
                 }.frame(maxWidth: .infinity).padding(.vertical, 28)
             }
             DisclosureGroup {
-                Text("These are practice estimates, not validated pronunciation grades. Word accuracy compares speech recognition with the phrase text; it does not assess individual speech sounds. Rhythm uses duration and loudness patterns. Intonation compares relative pitch contours; music and noisy recordings can affect it. Audio extraction keeps background sounds—it does not isolate the speaker.").font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                Text("These are practice estimates, not validated pronunciation grades. Word accuracy compares speech recognition with the phrase text; it does not assess individual speech sounds. Rhythm uses duration and loudness patterns. Intonation compares relative pitch contours; music and noisy recordings can affect it. Audio extraction keeps background sounds—it does not isolate the speaker. The voice map shows relative pitch and loudness over time; pauses are quiet gaps of 0.2 seconds or more, and bold words are simply the loudest ones, which are often but not always the stressed words.").font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
             } label: { Text("How feedback works").font(.system(size: 12, weight: .medium)) }
         }.padding(20)
     }
