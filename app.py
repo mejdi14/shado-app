@@ -328,6 +328,24 @@ def waveform(lid:str,index:int):
     values=np.array([float(np.sqrt(np.mean(c*c))) if len(c) else 0 for c in np.array_split(y,110)])
     return np.round(values/max(float(values.max()),1e-8),3).tolist()
 
+def track(y):
+    e,p=features(y)
+    return {'energy':np.round(e/max(float(e.max()) if len(e) else 0,1e-8),3).tolist(),'pitch':[round(float(v),1) if np.isfinite(v) else None for v in p]}
+
+@app.get('/api/voice/{lid}/{index}')
+def voice(lid:str,index:int):
+    lesson=read_lesson(lid)
+    if not 0<=index<len(lesson['phrases']): raise HTTPException(404,'Phrase not found')
+    phrase=lesson['phrases'][index]; path=folder(lid)
+    sr,y=wavfile.read(path/'audio.wav',mmap=True)
+    ref=y[int(phrase['start']*sr):int(phrase['end']*sr)]
+    ref=ref.astype(np.float32)/32768 if ref.dtype==np.int16 else ref.astype(np.float32)
+    result={'hop':.02,'source':track(ref),'take':None}
+    latest=phrase.get('latest')
+    if latest and (path/(ident(latest['id'])+'.wav')).exists():
+        result['take']=track(load_audio(path/(latest['id']+'.wav')))|{'speed':latest.get('playbackSpeed',1)}
+    return result
+
 @app.get('/api/take/{lid}/{tid}')
 def take_audio(lid:str,tid:str):
     path=folder(lid)/(ident(tid)+'.wav')
