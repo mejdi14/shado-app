@@ -52,8 +52,6 @@ func smoothPitch(_ v: [Double?]) -> [Double?] {
     return out
 }
 
-func smoothLoud(_ t: [Pt]) -> [Double] { t.indices.map { i in let r = max(0, i - 2)...min(t.count - 1, i + 2); return t[r].map(\.e).reduce(0, +) / Double(r.count) } }
-
 func onsetIndex(_ e: [Double]) -> Int { e.firstIndex { $0 > activeLevel } ?? 0 }
 func onsetX(_ t: [Pt]) -> Double { t.isEmpty ? 0 : t[onsetIndex(t.map(\.e))].x }
 func speechSpan(_ t: [Pt]) -> (Double, Double)? {
