@@ -24,11 +24,13 @@ The local speech model and dependencies are already installed in this folder. Ke
 
 A built-in Mac voice sample is included to try the workflow. It is labelled as a sample, not a real YouTuber.
 
-## The voice map
+## How it sounds
 
-Under each phrase, the voice map shows how the speaker said it: their relative pitch (the line), loudness (the shaded shape), pauses (tinted bands with their length), and each word placed where it is spoken. Bold words are the loudest ones, which are often, but not always, the stressed words. A summary line gives the speaking time, the pauses and whether the phrase ends rising, falling or level.
+Under each phrase, a single line shows the speaker's voice going up and down, with each word placed where it is spoken. Bold words are the loudest ones, which are often, but not always, the stressed words. Soft bands marked "pause" show quiet gaps of 0.2 seconds or more. While audio plays, the word being spoken is highlighted.
 
-While you record, your own pitch, loudness and pauses are drawn over the speaker's in real time from the microphone, so you can see where you rise, fall or pause differently. In Shadow mode your line follows the original as it plays; in Listen and Recall it starts when you start speaking. After feedback is ready, your saved take stays on the map until you record again. The saved take is stretched or squeezed to the speaker's length so the two shapes line up; the summary line under the map still shows your real speaking time and pauses. The live view is analysed on this Mac and is a visual guide, not a score.
+Three short tips sit under the line: which words to say more strongly, where the speaker pauses, and whether the voice goes up, goes down or stays flat at the end.
+
+While you record, your own line is drawn over the speaker's in real time from the microphone. In Shadow mode it follows the original as it plays; in Listen and Recall it starts when you start speaking. After feedback is ready, your saved take stays on the line until you record again, stretched or squeezed to the speaker's length so the two shapes line up, and the tips show how many times you paused and how your voice ended. This is analysed on this Mac and is a visual guide, not a score.
 
 ## What the feedback means
 
