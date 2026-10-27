@@ -122,11 +122,11 @@ def settle_ends(phrases, y, sr=16000):
         a=int(min(lw['start'],last-.1)*sr); seg=y[max(0,a):int(limit*sr)]; n=len(seg)//160
         if limit<=last or n<2: continue
         f=np.sqrt((seg[:n*160].astype(np.float64).reshape(n,160)**2).mean(axis=1))
-        k0=min(n-1,max(0,int((last*sr-max(0,a))/160))); floor=max(f[:k0+1].max()*.04,2e-4); quiet=0; stop=n
+        k0=min(n-1,max(0,int((last*sr-max(0,a))/160))); floor=max(f[:k0+1].max()*.025,2e-4); quiet=0; stop=n
         for k in range(k0,n):
             quiet=quiet+1 if f[k]<floor else 0
             if quiet>=15: stop=k-14; break
-        p['end']=round(max(last+.12,min(limit,(max(0,a)+stop*160)/sr+.1)),3)
+        p['end']=round(max(last+.2,min(limit,(max(0,a)+stop*160)/sr+.25)),3)
 
 def job_start(action):
     jid=uuid.uuid4().hex
