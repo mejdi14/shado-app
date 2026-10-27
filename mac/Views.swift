@@ -16,6 +16,7 @@ extension Color {
     static let rec = Color(red: 0.94, green: 0.25, blue: 0.27)
     static let violet = Color(red: 0.45, green: 0.36, blue: 0.98)
     static let rose = Color(red: 0.94, green: 0.38, blue: 0.6)
+    static let pitch = Color(red: 0.2, green: 0.56, blue: 1)
 }
 
 extension View {
@@ -452,57 +453,89 @@ struct PracticePanel: View {
 struct VoiceMapView: View {
     @EnvironmentObject var s: Store
     let phrase: Phrase
+    var len: Double { max(phrase.end - phrase.start, 0.01) }
     var body: some View {
         TimelineView(.animation(minimumInterval: nil, paused: !(s.recording || s.isPlaying || s.isTakePlaying))) { _ in
-            let you = s.live?.track ?? s.voice?.you
+            let you = s.live?.track ?? s.voice?.you, head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), len) : s.position
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 14) {
-                    Text("How it sounds").font(.system(size: 13, weight: .semibold))
-                    Spacer(minLength: 0)
-                    legendDot(Color.ink.opacity(0.4), "Speaker")
-                    if s.recording || you?.isEmpty == false { legendDot(.violet, "You") }
+                    Button("Replay example") { s.playOriginal() }.buttonStyle(PillStyle(primary: true, compact: true)).disabled(s.locked).help("Play the speaker's phrase from the start")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Position").font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        Slider(value: Binding(get: { head }, set: { s.seek($0) }), in: 0...len).controlSize(.small).disabled(s.locked || s.isTakePlaying)
+                    }
+                    Text("\(clock(head)) / \(clock(len))").font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
                 }
-                Canvas { ctx, size in draw(ctx, size, you) }.frame(height: 116)
-                    .accessibilityLabel("The speaker's voice going up and down, with the words underneath")
-                if let v = s.voice {
-                    muted("The line rises when the voice goes up and falls when it goes down. Match its shape, not the speaker's natural pitch.").fixedSize(horizontal: false, vertical: true)
-                    guide(v, s.recording ? nil : you)
-                } else if s.voiceFailed { muted("Couldn't load the speaker's voice. Quit Shadow Studio and any Terminal window running it, then open it again.") }
+                VStack(spacing: 14) {
+                    if !s.concealed { Text(sentence(s.voice?.stress ?? [])).font(.system(size: 13.5)).multilineTextAlignment(.center).frame(maxWidth: .infinity) }
+                    Canvas { ctx, size in draw(ctx, size, you, head) }.frame(height: 210)
+                        .accessibilityLabel("The speaker's voice going up and down, with pauses and the words underneath")
+                        .help("The line rises when the voice goes up and falls when it goes down. Match its shape, not the speaker's natural pitch.")
+                    if let v = s.voice { guide(v, s.recording ? nil : you) }
+                    else if s.voiceFailed { muted("Couldn't load the speaker's voice. Quit Shadow Studio and any Terminal window running it, then open it again.") }
+                }.padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Color.subtle))
+                HStack(spacing: 18) {
+                    HStack(spacing: 6) { Capsule().fill(Color.pitch).frame(width: 18, height: 3); muted("Pitch movement") }
+                    HStack(spacing: 6) { RoundedRectangle(cornerRadius: 2).fill(Color.warn.opacity(0.1)).overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.warn.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))).frame(width: 12, height: 12); muted("Silence") }
+                    if s.recording || you?.isEmpty == false { HStack(spacing: 6) { Capsule().fill(Color.violet).frame(width: 18, height: 3); muted("You") } }
+                }.frame(maxWidth: .infinity)
             }
         }
     }
 
+    func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
     func clean(_ w: String) -> String { w.trimmingCharacters(in: .whitespaces.union(.punctuationCharacters)) }
+    func endingText(_ e: String) -> String { e.hasPrefix("goes up") ? "lifts upward" : e.hasPrefix("goes down") ? "settles downward" : e.isEmpty ? "hard to tell" : "stays level" }
+
+    func sentence(_ stress: Set<Int>) -> AttributedString {
+        guard let words = phrase.words, !words.isEmpty else { return AttributedString(phrase.text) }
+        var out = AttributedString()
+        for (i, wd) in words.enumerated() {
+            let t = wd.word.trimmingCharacters(in: .whitespaces), core = clean(t)
+            if i > 0 { out += AttributedString(" ") }
+            guard stress.contains(i), let r = t.range(of: core), !core.isEmpty else { out += AttributedString(t); continue }
+            var w = AttributedString(core); w.backgroundColor = Color.pitch.opacity(0.18)
+            out += AttributedString(String(t[..<r.lowerBound])) + w + AttributedString(String(t[r.upperBound...]))
+        }
+        return out
+    }
 
     func guide(_ v: VoiceMap, _ you: [Pt]?) -> some View {
         let words = phrase.words ?? []
-        let strong = v.stress.sorted().filter { $0 < words.count }.prefix(4).map { clean(words[$0].word) }
+        let strong = v.stress.sorted().filter { $0 < words.count }.prefix(4).map { clean(words[$0].word).lowercased() }.joined(separator: " + ")
         let after = v.pauses.compactMap { p in words.last { $0.start - phrase.start < p.0 }.map { "“\(clean($0.word))”" } }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        let n0 = v.pauses.count, rhythm = n0 == 0 ? "In one breath" : n0 == 1 ? (v.pauses[0].1 - v.pauses[0].0 < 0.35 ? "One short pause" : "One pause") : n0 == 2 ? "Two pauses" : "\(n0) pauses"
         let end = ending(v.src), mine = you?.isEmpty == false ? you : nil
         let n = pauses(mine ?? []).count, yEnd = ending(mine ?? [])
-        return HStack(alignment: .top, spacing: 10) {
-            tip("Say these stronger", strong.isEmpty ? "No word stands out" : strong.joined(separator: ", "), nil, false)
-            tip("Pause", after.isEmpty ? "None. Say it in one go." : "After " + after.joined(separator: ", "), mine.map { _ in n == 0 ? "no pauses" : "\(n) pause\(n > 1 ? "s" : "")" }, n == v.pauses.count)
-            tip("At the end, the voice", end.isEmpty ? "Hard to tell" : end, mine.map { _ in yEnd.isEmpty ? "hard to tell" : yEnd }, !end.isEmpty && yEnd == end)
+        return HStack(alignment: .top, spacing: 16) {
+            tip("Emphasis", strong.isEmpty ? "No word stands out" : String(strong.prefix(1)).uppercased() + String(strong.dropFirst()), nil, nil, false)
+            tip("Rhythm", rhythm, after.isEmpty ? nil : "After " + after.joined(separator: ", "), mine.map { _ in n == 0 ? "no pauses" : "\(n) pause\(n > 1 ? "s" : "")" }, n == n0)
+            tip("Ending", end.isEmpty ? "Hard to tell" : "Voice " + endingText(end), nil, mine.map { _ in endingText(yEnd) }, !end.isEmpty && yEnd == end)
         }
     }
 
-    func tip(_ title: String, _ value: String, _ yours: String?, _ ok: Bool) -> some View {
+    func tip(_ title: String, _ value: String, _ detail: String?, _ yours: String?, _ ok: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.system(size: 11.5)).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+            Text(value).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+            if let detail { Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
             if let yours {
                 HStack(spacing: 4) { Text("You: " + yours); if ok { Image(systemName: "checkmark") } }
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(ok ? Color.good : Color.violet).padding(.top, 2)
             }
-        }.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).background(RoundedRectangle(cornerRadius: 10).fill(Color.subtle))
+        }.frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    func draw(_ ctx: GraphicsContext, _ size: CGSize, _ you: [Pt]?) {
-        let v = s.voice, src = v?.src ?? [], span = max(phrase.end - phrase.start, (you?.last?.x ?? 0) + 0.1)
-        let w = size.width, h = size.height, top: CGFloat = 16, bot = h - 30, mid = (top + bot) / 2
-        func X(_ x: Double) -> CGFloat { CGFloat(x / span) * w }
-        func Y(_ st: Double) -> CGFloat { mid - CGFloat(max(-9, min(9, st))) * (bot - top) / 20 }
+    func draw(_ ctx: GraphicsContext, _ size: CGSize, _ you: [Pt]?, _ head: Double) {
+        let v = s.voice, src = v?.src ?? [], span = max(len, (you?.last?.x ?? 0) + 0.1)
+        let w = size.width, h = size.height, left: CGFloat = 50, right = w - 22, top: CGFloat = 24, bot = h - 58
+        let vals = src.compactMap(\.st).sorted()
+        var lo = vals.isEmpty ? -3 : vals[Int(Double(vals.count - 1) * 0.03)], hi = vals.isEmpty ? 3 : vals[Int(Double(vals.count - 1) * 0.97)]
+        if hi - lo < 6 { let c = (hi + lo) / 2; lo = c - 3; hi = c + 3 }
+        let yHi = top + 18, yLo = bot - 18
+        func X(_ x: Double) -> CGFloat { left + CGFloat(x / span) * (right - left) }
+        func Y(_ st: Double) -> CGFloat { min(bot - 2, max(top + 2, yHi + CGFloat((hi - st) / (hi - lo)) * (yLo - yHi))) }
+        func stAt(_ x: Double, _ t: [Pt] = src) -> Double? { t.filter { $0.st != nil && abs($0.x - x) <= 0.15 }.min { abs($0.x - x) < abs($1.x - x) }?.st }
         func line(_ t: [Pt], _ c: Color, _ width: CGFloat) {
             var p = Path(), run: [CGPoint] = [], prev: Double? = nil
             func flush() {
@@ -521,26 +554,72 @@ struct VoiceMapView: View {
             flush()
             ctx.stroke(p, with: .color(c), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
         }
-        for (a, b) in v?.pauses ?? [] {
-            ctx.fill(Path(roundedRect: CGRect(x: X(a), y: top - 6, width: X(b) - X(a), height: bot - top + 12), cornerRadius: 4), with: .color(Color.rose.opacity(0.08)))
-            if X(b) - X(a) >= 26 { ctx.draw(Text("pause").font(.system(size: 9, weight: .medium)).foregroundColor(.rose), at: CGPoint(x: X((a + b) / 2), y: top - 3), anchor: .top) }
+        var placed: [CGRect] = []
+        func label(_ s: String, _ at: CGPoint, _ anchor: UnitPoint, _ c: Color, _ size: CGFloat = 10, _ weight: Font.Weight = .regular) {
+            let t = ctx.resolve(Text(s).font(.system(size: size, weight: weight)).foregroundColor(c)), m = t.measure(in: CGSize(width: w, height: h))
+            let r = CGRect(x: at.x - m.width * anchor.x, y: at.y - m.height * anchor.y, width: m.width, height: m.height)
+            guard r.minX >= 0, r.maxX <= w, !placed.contains(where: { $0.insetBy(dx: -4, dy: -2).intersects(r) }) else { return }
+            placed.append(r); ctx.draw(t, at: at, anchor: anchor)
         }
-        line(src, Color.ink.opacity(you?.isEmpty == false ? 0.3 : 0.45), 3.5)
+        for (y, name) in [(yHi, "Higher"), (yLo, "Lower")] {
+            ctx.stroke(Path { $0.move(to: CGPoint(x: left, y: y)); $0.addLine(to: CGPoint(x: right, y: y)) }, with: .color(Color.ink.opacity(0.07)), lineWidth: 1)
+            label(name, CGPoint(x: 4, y: y), .leading, .secondary)
+        }
+        for (a, b) in v?.pauses ?? [] {
+            let r = CGRect(x: X(a), y: top, width: X(b) - X(a), height: bot - top)
+            ctx.fill(Path(roundedRect: r, cornerRadius: 4), with: .color(Color.warn.opacity(0.09)))
+            ctx.stroke(Path(roundedRect: r, cornerRadius: 4), with: .color(Color.warn.opacity(0.65)), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            label("\(Int(((b - a) * 100).rounded()) * 10) ms pause", CGPoint(x: r.midX, y: top - 5), .bottom, .secondary, 9.5)
+        }
+        line(src, Color.ink.opacity(0.07), 9)
+        line(src, Color.pitch.opacity(you?.isEmpty == false ? 0.55 : 1), 3.5)
         line(you ?? [], .violet, 2.5)
+        let pts = src.filter { $0.st != nil }
+        if let first = pts.first, let lastX = pts.last?.x, lastX - first.x > 0.8 {
+            let end = ending(src), ex = lastX - 0.3
+            if !end.isEmpty, !end.hasPrefix("stays"), let st = stAt(ex) {
+                label(end.hasPrefix("goes up") ? "rise ↗" : "fall ↘", CGPoint(x: X(ex), y: max(top + 14, Y(st) - 12)), .bottom, .ink, 10.5, .medium)
+            }
+            var best: (x: Double, st: Double, d: Double)? = nil
+            for q in pts where q.x < lastX - 0.35 {
+                let st = q.st!, near = pts.filter { abs($0.x - q.x) <= 0.15 }, before = pts.filter { $0.x >= q.x - 0.7 && $0.x < q.x }
+                guard near.allSatisfy({ $0.st! <= st }), let m = before.compactMap(\.st).min(), st - m >= 2.5, st - m > (best?.d ?? 0) else { continue }
+                best = (q.x, st, st - m)
+            }
+            if let b = best { label("rise ↗", CGPoint(x: X(b.x) - 8, y: Y(b.st) - 6), .bottomTrailing, .ink, 10.5, .medium) }
+            if let (a, z) = speechSpan(src) {
+                let edges = [a] + (v?.pauses ?? []).flatMap { [$0.0, $0.1] } + [z]
+                let segs = stride(from: 0, to: edges.count - 1, by: 2).map { (edges[$0], edges[$0 + 1]) }
+                if let seg = segs.max(by: { $0.1 - $0.0 < $1.1 - $1.0 }), seg.1 - seg.0 >= 1,
+                   (phrase.words ?? []).filter({ ($0.start + $0.end) / 2 - phrase.start >= seg.0 && ($0.start + $0.end) / 2 - phrase.start <= seg.1 }).count >= 3,
+                   let peak = pts.filter({ $0.x >= seg.0 && $0.x <= seg.1 }).compactMap(\.st).max() {
+                    label("keep connected", CGPoint(x: X((seg.0 + seg.1) / 2), y: max(top + 12, Y(peak) - 10)), .bottom, .secondary, 10)
+                }
+            }
+        }
+        let step: Double = len <= 6 ? 1 : len <= 15 ? 2 : 5, tickY = bot + 16
+        for t in stride(from: 0, to: len, by: step) where t == 0 || X(len) - X(t) >= 36 { label(clock(t), CGPoint(x: X(t), y: tickY), .center, .secondary, 9.5) }
+        label(String(format: "%d:%04.1f", Int(len) / 60, len.truncatingRemainder(dividingBy: 60)), CGPoint(x: X(len), y: tickY), .center, .secondary, 9.5)
         var ph: Double? = nil
         if s.recording, let L = s.live { ph = L.x }
-        else if s.isPlaying, let p = s.original { ph = p.currentTime - phrase.start }
         else if s.isTakePlaying, s.live == nil, let v, v.you != nil, let t = s.takePlayer { ph = t.currentTime * v.scale + v.shift }
-        var last: CGFloat = -1
-        for (i, wd) in (phrase.words ?? []).enumerated() {
-            let a = wd.start - phrase.start, b = wd.end - phrase.start, c = X((a + b) / 2), em = v?.stress.contains(i) ?? false, now = ph.map { $0 >= a && $0 < b } ?? false
-            let txt = ctx.resolve(Text(wd.word.trimmingCharacters(in: .whitespaces)).font(.system(size: em ? 13 : 12, weight: em ? .bold : .regular)).foregroundColor(em || now ? .ink : .secondary))
-            let sz = txt.measure(in: size)
-            guard c - sz.width / 2 > last + 4 else { continue }
-            if now { ctx.fill(Path(roundedRect: CGRect(x: c - sz.width / 2 - 5, y: h - sz.height - 5, width: sz.width + 10, height: sz.height + 4), cornerRadius: 6), with: .color(Color.violet.opacity(0.14))) }
-            ctx.draw(txt, at: CGPoint(x: c, y: h - 3), anchor: .bottom); last = c + sz.width / 2
+        else if s.isPlaying || head > 0 { ph = head }
+        if !s.concealed {
+            var last: CGFloat = -1
+            for (i, wd) in (phrase.words ?? []).enumerated() {
+                let a = wd.start - phrase.start, b = wd.end - phrase.start, c = X((a + b) / 2), em = v?.stress.contains(i) ?? false, now = ph.map { $0 >= a && $0 < b } ?? false
+                let word = clean(wd.word)
+                let txt = ctx.resolve(Text(em ? word.uppercased() : word).font(.system(size: 11.5, weight: em ? .semibold : .regular)).foregroundColor(em || now ? .ink : .secondary))
+                let sz = txt.measure(in: size)
+                guard !word.isEmpty, c - sz.width / 2 > last + 6 else { continue }
+                if now { ctx.fill(Path(roundedRect: CGRect(x: c - sz.width / 2 - 6, y: h - sz.height - 8, width: sz.width + 12, height: sz.height + 6), cornerRadius: 6), with: .color(Color.pitch.opacity(0.15))) }
+                ctx.draw(txt, at: CGPoint(x: c, y: h - 5), anchor: .bottom); last = c + sz.width / 2
+            }
         }
-        if let ph, ph >= 0 { ctx.stroke(Path { $0.move(to: CGPoint(x: X(ph), y: top - 6)); $0.addLine(to: CGPoint(x: X(ph), y: bot + 4)) }, with: .color(Color.ink.opacity(0.35)), lineWidth: 1) }
+        if let ph, ph >= 0 {
+            ctx.stroke(Path { $0.move(to: CGPoint(x: X(ph), y: top - 2)); $0.addLine(to: CGPoint(x: X(ph), y: bot + 2)) }, with: .color(Color.ink.opacity(0.75)), lineWidth: 1.5)
+            if let st = stAt(ph, s.recording ? (you ?? []) : src) { ctx.fill(Path(ellipseIn: CGRect(x: X(ph) - 4, y: Y(st) - 4, width: 8, height: 8)), with: .color(.ink)) }
+        }
     }
 }
 
