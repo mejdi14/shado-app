@@ -97,7 +97,7 @@ def transcribe(path):
         segments, info = model.transcribe(str(path), language='en', word_timestamps=True, vad_filter=True, condition_on_previous_text=False, beam_size=5)
         return list(segments)
 
-def make_phrases(segments):
+def make_phrases(segments, audio=None):
     phrases=[]; words=[]
     def flush():
         if not words: return
@@ -110,7 +110,23 @@ def make_phrases(segments):
             words.append({'start':w.start,'end':w.end,'word':w.word})
             if re.search(r'[.!?][\"\u201d\u2019]?$', w.word.strip()) and w.end-words[0]['start']>.65: flush()
     flush()
+    if audio is not None: settle_ends(phrases, audio)
     return phrases
+
+def settle_ends(phrases, y, sr=16000):
+    total=len(y)/sr
+    for i,p in enumerate(phrases):
+        lw=p['words'][-1]; last=lw['end']
+        nxt=phrases[i+1]['words'][0]['start']-.05 if i+1<len(phrases) else total
+        limit=min(nxt,last+.8,total)
+        a=int(min(lw['start'],last-.1)*sr); seg=y[max(0,a):int(limit*sr)]; n=len(seg)//160
+        if limit<=last or n<2: continue
+        f=np.sqrt((seg[:n*160].astype(np.float64).reshape(n,160)**2).mean(axis=1))
+        k0=min(n-1,max(0,int((last*sr-max(0,a))/160))); floor=max(f[:k0+1].max()*.04,2e-4); quiet=0; stop=n
+        for k in range(k0,n):
+            quiet=quiet+1 if f[k]<floor else 0
+            if quiet>=15: stop=k-14; break
+        p['end']=round(max(last+.12,min(limit,(max(0,a)+stop*160)/sr+.1)),3)
 
 def job_start(action):
     jid=uuid.uuid4().hex
@@ -134,7 +150,7 @@ def finish_import(lid, title, source, jid):
     audio=load_audio(path/'audio.wav')
     if len(audio)>16000*1800: raise ValueError('Choose a video or file under 30 minutes for focused practice.')
     jobs[jid]['message']='Finding phrases… The first import downloads a speech model (about 150 MB).'
-    phrases=make_phrases(transcribe(path/'audio.wav'))
+    phrases=make_phrases(transcribe(path/'audio.wav'), audio)
     if not phrases: raise ValueError('No clear English speech found. Try a clip with a single speaker and little music.')
     lesson={'id':lid,'title':title[:160],'source':source,'created':time.time(),'duration':round(len(audio)/16000,2),'phrases':phrases,'sample':False}
     save_lesson(lesson)
