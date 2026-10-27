@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'models'))
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-import json, re, secrets, shutil, subprocess, threading, time, uuid, math
+import json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
 import numpy as np
@@ -18,6 +18,7 @@ DATA = ROOT / 'data'
 DATA.mkdir(exist_ok=True)
 TOKEN = secrets.token_urlsafe(32)
 PORT = int(os.environ.get('SHADOW_PORT', '8765'))
+LAN = os.environ.get('SHADOW_LAN') == '1'
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 executor = ThreadPoolExecutor(max_workers=1)
 jobs = {}
@@ -25,10 +26,15 @@ model = None
 model_lock = threading.Lock()
 file_lock = threading.Lock()
 
+def lan_host(host):
+    name, _, port = host.rpartition(':')
+    try: return port == str(PORT) and ipaddress.ip_address(name).is_private
+    except ValueError: return False
+
 @app.middleware('http')
 async def local_only(request, call_next):
-    allowed = {f'127.0.0.1:{PORT}', f'localhost:{PORT}'}
-    if request.headers.get('host') not in allowed:
+    host = request.headers.get('host') or ''
+    if host not in {f'127.0.0.1:{PORT}', f'localhost:{PORT}'} and not (LAN and lan_host(host)):
         return JSONResponse({'detail':'Use the local app address.'}, status_code=403)
     if request.method not in ('GET','HEAD') and request.headers.get('x-shadow-token') != TOKEN:
         return JSONResponse({'detail':'Refresh the app and try again.'}, status_code=403)
@@ -364,4 +370,8 @@ def status(): return {'local':True,'modelReady':model is not None,'ffmpeg':bool(
 if __name__=='__main__':
     os.environ['PATH']='/opt/homebrew/bin:'+os.environ.get('PATH','')
     import uvicorn
-    uvicorn.run(app,host='127.0.0.1',port=PORT,log_level='warning')
+    if LAN:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            try: probe.connect(('10.255.255.255', 1)); print(f'LAN mode: anyone on this Wi-Fi can reach Shadow Studio. Phone address: http://{probe.getsockname()[0]}:{PORT}')
+            except OSError: print('LAN mode: anyone on this network can reach Shadow Studio.')
+    uvicorn.run(app,host='0.0.0.0' if LAN else '127.0.0.1',port=PORT,log_level='warning')
