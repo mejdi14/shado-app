@@ -24,6 +24,7 @@ enum Mode: String, CaseIterable {
     @Published var voice: VoiceMap?
     @Published var voiceFailed = false
     @Published var isPlaying = false
+    @Published var position = 0.0
     @Published var isTakePlaying = false
     @Published var recording = false
     @Published var starting = false
@@ -92,7 +93,7 @@ enum Mode: String, CaseIterable {
 
     func phraseChanged() {
         stopPlayback(); setMode(mode, force: true)
-        voice = nil; voiceFailed = false
+        voice = nil; voiceFailed = false; position = 0
         guard let l = lesson else { return }
         let id = l.id, ix = index
         if live?.key != "\(id):\(ix)" { live = nil }
@@ -131,6 +132,7 @@ enum Mode: String, CaseIterable {
 
     func stopPlayback() {
         pollTask?.cancel(); pollTask = nil; playbackDone = nil
+        if isPlaying, let p = original, let ph = phrase { position = min(max(0, p.currentTime - ph.start), ph.end - ph.start) }
         original?.pause(); takePlayer?.stop()
         isPlaying = false; isTakePlaying = false
     }
@@ -147,10 +149,16 @@ enum Mode: String, CaseIterable {
                 guard !Task.isCancelled, let ph = phrase else { return }
                 if p.currentTime >= ph.end - 0.015 || !p.isPlaying {
                     if looping && !playOnce && !recording { p.currentTime = ph.start; p.play() }
-                    else { let done = playbackDone; stopPlayback(); done?(); return }
+                    else { let done = playbackDone; stopPlayback(); position = ph.end - ph.start; done?(); return }
                 }
             }
         }
+    }
+
+    func seek(_ x: Double) {
+        guard let ph = phrase else { return }
+        position = min(max(0, x), ph.end - ph.start)
+        if isPlaying { original?.currentTime = ph.start + position }
     }
 
     func togglePlay() {
