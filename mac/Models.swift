@@ -65,7 +65,7 @@ func pauses(_ t: [Pt]) -> [(Double, Double)] {
     for i in a...b {
         let on = t[i].e > activeLevel
         if !on && s == nil { s = i }
-        if on, let st = s { if t[i].x - t[st].x >= 0.2 { out.append((t[st].x, t[i].x)) }; s = nil }
+        if on, let st = s { if t[i].x - t[st].x >= 0.149 { out.append((t[st].x, t[i].x)) }; s = nil }
     }
     return out
 }
