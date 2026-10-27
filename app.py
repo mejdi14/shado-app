@@ -238,17 +238,19 @@ def align(ref,hyp):
     return max(0,round(100*(1-int(dp[n,m])/max(n,1)))),list(reversed(marks))
 
 def features(y):
-    frame=640; hop=320
+    frame=640; hop=320; low,high=40,267
+    win=np.hanning(frame); norm=np.correlate(win,win,mode='full')[frame-1:]; norm=norm/norm[0]
     energies=[]; pitches=[]
     for off in range(0,max(1,len(y)-frame),hop):
         x=y[off:off+frame]
         if len(x)<frame: continue
         x=x-x.mean(); rms=float(np.sqrt(np.mean(x*x))); energies.append(rms)
         pitch=np.nan
-        if rms>.008:
-            x=x*np.hanning(frame); corr=np.correlate(x,x,mode='full')[frame-1:]
-            low,high=40,267; lag=int(np.argmax(corr[low:high]))+low
-            if corr[0]>0 and corr[lag]/corr[0]>.45: pitch=16000/lag
+        if rms>.006:
+            x=x*win; corr=np.correlate(x,x,mode='full')[frame-1:]
+            if corr[0]>0:
+                r=corr[low:high]/(corr[0]*norm[low:high]); best=float(r.max())
+                if best>.45: pitch=16000/(low+next((k for k in range(1,len(r)-1) if r[k]>=.9*best and r[k]>=r[k-1] and r[k]>=r[k+1]),int(np.argmax(r))))
         pitches.append(pitch)
     return np.asarray(energies),np.asarray(pitches)
 
