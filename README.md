@@ -28,6 +28,8 @@ A built-in Mac voice sample is included to try the workflow. It is labelled as a
 
 Under each phrase, a single line shows the speaker's voice going up and down, with each word placed where it is spoken. Bold words are the loudest ones, which are often, but not always, the stressed words. Soft bands marked "pause" show quiet gaps of 0.2 seconds or more. While audio plays, the word being spoken is highlighted.
 
+In the Mac app the line is a blue pitch chart between "Higher" and "Lower", with a time axis, dashed boxes for silences labelled with their length (for example "180 ms pause"), and short notes such as "rise ↗", "fall ↘" and "keep connected" where the voice clearly moves or runs on without a break. Loud words are written in capitals under the chart and highlighted in the sentence above it; the words are hidden in Recall. "Replay example" plays the phrase from the start, and the Position slider moves the playhead through the phrase. The tips below the chart are called Emphasis, Rhythm and Ending.
+
 Three short tips sit under the line: which words to say more strongly, where the speaker pauses, and whether the voice goes up, goes down or stays flat at the end.
 
 While you record, your own line is drawn over the speaker's in real time from the microphone. In Shadow mode it follows the original as it plays; in Listen and Recall it starts when you start speaking. After feedback is ready, your saved take stays on the line until you record again, stretched or squeezed to the speaker's length so the two shapes line up, and the tips show how many times you paused and how your voice ended. This is analysed on this Mac and is a visual guide, not a score.
