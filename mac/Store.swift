@@ -100,11 +100,11 @@ enum Mode: String, CaseIterable {
         Task {
             guard let v = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)") else { if lesson?.id == id, index == ix { voiceFailed = true }; return }
             guard lesson?.id == id, index == ix, let ph = phrase else { return }
-            let src = makeTrack(v.source.energy, v.source.pitch) { Double($0) * v.hop }
+            let src = makeTrack(v.source.energy, v.source.pitch) { Double($0 + 1) * v.hop }
             let sp = v.take?.speed ?? 1
             var you: [Pt]? = nil, shift = 0.0, scale = sp
             if let t = v.take {
-                let raw = makeTrack(t.energy, t.pitch) { Double($0) * v.hop * sp }, len = ph.end - ph.start
+                let raw = makeTrack(t.energy, t.pitch) { Double($0 + 1) * v.hop * sp }, len = ph.end - ph.start
                 shift = onsetX(src) - onsetX(raw)
                 if let (a, b) = speechSpan(src), let (c, d) = speechSpan(raw), d > c { scale = (b - a) * sp / (d - c); shift = a - c / sp * scale }
                 let sc = scale, sh = shift
