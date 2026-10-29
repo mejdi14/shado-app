@@ -10,6 +10,7 @@ from urllib.parse import urlparse, parse_qs
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample_poly
+from scipy.ndimage import minimum_filter1d, maximum_filter1d
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -97,36 +98,127 @@ def transcribe(path):
         segments, info = model.transcribe(str(path), language='en', word_timestamps=True, vad_filter=True, condition_on_previous_text=False, beam_size=5)
         return list(segments)
 
-def make_phrases(segments, audio=None):
-    phrases=[]; words=[]
-    def flush():
-        if not words: return
-        phrases.append({'start':round(max(0,words[0]['start']-.08),3),'end':round(words[-1]['end']+.12,3),'text':''.join(w['word'] for w in words).strip(),'words':words.copy(),'practised':False})
-        words.clear()
+CLAUSE_START={'and','but','or','so','because','although','though','while','whereas','when','whenever','where','wherever','if','unless','until','since','after','before','which','who','whom','whose','then','however','yet','nor','also','actually','anyway','instead','otherwise','therefore','meanwhile','plus'}
+NO_END={'a','an','the','my','your','his','its','our','their','this','these','those','of','to','in','on','at','for','with','from','by','about','into','onto','than','and','or','but','so','because','if','that','which','who','whose','i','we','they','he','she','is','are','was','were','am','be','been','do','does','did','have','has','had','will','would','can','could','should','shall','may','might','must','very','such',"i'm","you're","we're","they're","it's","that's","there's","he's","she's","i've","you've","we've","they've","i'll","you'll","we'll","they'll","i'd","you'd","we'd","they'd","don't","doesn't","didn't","can't","won't","isn't","aren't","wasn't","weren't","let's",'gonna','wanna','gotta'}
+ABBREV={'mr','mrs','ms','dr','prof','st','vs','jr','sr'}
+TAIL,LEAD=.3,.15
+
+def speech_map(y):
+    # 10 ms loudness frames and a quiet mask judged against the local noise floor, so tails count as sound in clean and noisy audio alike.
+    if len(y)<160: y=np.pad(y,(0,160-len(y)))
+    n=len(y)//160; frames=y[:n*160].reshape(n,160)
+    db=10*np.log10(np.convolve(np.einsum('ij,ij->i',frames,frames,dtype=np.float64)/160,np.ones(3)/3,mode='same')+1e-10)
+    m=-(-n//100); blocks=np.pad(db,(0,m*100-n),mode='edge').reshape(m,100)
+    floor=minimum_filter1d(np.percentile(blocks,10,axis=1),21); level=np.maximum(maximum_filter1d(np.percentile(blocks,95,axis=1),5),np.percentile(db,95)-20)
+    thr=np.interp(np.arange(n),np.arange(m)*100+50,np.clip(floor+np.clip(.35*(level-floor),6,14),level-50,level-10))
+    quiet=db<thr
+    try:
+        from faster_whisper.vad import get_vad_model
+        padded=np.pad(y,(0,512-len(y)%512))
+        vad=np.asarray(get_vad_model()(padded),dtype=np.float32).reshape(len(padded)//512,-1)[:,0]
+        quiet|=(vad[np.minimum(len(vad)-1,(np.arange(n)*160+80)//512)]<.15)&(db<thr+8)
+    except Exception: pass
+    return db,quiet
+
+def quiet_runs(mask):
+    edges=np.flatnonzero(np.diff(np.concatenate(([False],mask,[False])).astype(np.int8)))
+    return [[int(s),int(e)] for s,e in zip(edges[::2],edges[1::2])]
+
+def pause_between(a, b, db, quiet):
+    # Whisper's word ends are often early (the end of "word." is taken from before the period token), so look for the real silence around the gap.
+    n=len(quiet); g0,g1=sorted((a['end'],b['start']))
+    lo=max(0,int((a['start']+.03)*100)); hi=min(n,int((b['end']-.03)*100))
+    i0=min(n-1,max(0,int(max(a['start']+.05,g0-.12)*100))); i1=min(n,max(i0+3,int(min(b['end']-.05,g1+.25)*100)))
+    rs=[[s+i0,e+i0] for s,e in quiet_runs(quiet[i0:i1])]
+    if rs:
+        while rs[0][0]>lo and quiet[rs[0][0]-1]: rs[0][0]-=1
+        while rs[-1][1]<hi and quiet[rs[-1][1]]: rs[-1][1]+=1
+    best=None
+    for s,e in rs:
+        dur=(e-s)/100; dist=max(0,g0-e/100,s/100-g1)
+        if dur>=.05 and (dur>=.12 or dist<=.04) and (best is None or dur-.6*dist>best[0]): best=(dur-.6*dist,s,e)
+    if best is None:
+        c0=min(n-1,max(0,int((g0-.06)*100))); c1=min(n,max(c0+1,int((g1+.08)*100)))
+        v=c0+int(np.argmin(db[c0:c1]+12*np.abs(np.arange(c0,c1)/100-(g0+g1)/2)))
+        return v/100,v/100
+    _,s,e=best
+    s=min([r[0] for r in rs if r[1]<=s and r[1]-r[0]>=10 and r[0]>=(g0-.05)*100]+[s])
+    e=max([r[1] for r in rs if r[0]>=e and r[1]-r[0]>=10 and r[1]<=(g1+.05)*100]+[e])
+    return s/100,e/100
+
+def sound_start(w, quiet):
+    n=len(quiet); i0=min(n-1,max(0,int((w['start']-1.5)*100))); i1=min(n,max(i0+1,int(min(w['end']-.05,w['start']+.12)*100)))
+    rs=[[s+i0,e+i0] for s,e in quiet_runs(quiet[i0:i1]) if e-s>=15 or s+i0==0]
+    if not rs: return w['start']
+    e=rs[-1][1]
+    while e<min(n,int((w['end']-.05)*100)) and quiet[e]: e+=1
+    return e/100
+
+def sound_end(w, quiet):
+    n=len(quiet); i0=min(n-1,max(0,int(max(w['start']+.05,w['end']-.12)*100))); i1=min(n,max(i0+1,int((w['end']+1.5)*100)))
+    rs=[[s+i0,e+i0] for s,e in quiet_runs(quiet[i0:i1]) if e-s>=15 or e+i0==n]
+    if not rs: return min(n/100,w['end']+.2)
+    s=rs[0][0]
+    while s>max(0,int((w['start']+.05)*100)) and quiet[s-1]: s-=1
+    return s/100
+
+def break_score(word, nxt, pause, seg_end):
+    tail=word.strip().rstrip('"\'\u201d\u2019)]}'); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'")); head=re.sub(r"[^a-z']","",nxt.lower().replace('\u2019',"'"))
+    if core in ABBREV or re.fullmatch(r"(?:[A-Za-z]\.){2,}",tail): punct=0
+    elif tail.endswith(('...','\u2026',';',':')): punct=.7
+    elif tail.endswith(('.','!','?')): punct=1
+    elif tail.endswith(('\u2014','\u2013','-')) or nxt.strip().startswith(('\u2014','\u2013','-')): punct=.6
+    elif tail.endswith(','): punct=.35
+    else: punct=0
+    score=.8*punct+.5*(1-math.exp(-pause/.25))+(.1 if seg_end else 0)-(.15 if pause<.05 else 0)+(.2 if head in CLAUSE_START else .1 if head=='that' else 0)
+    return score-(.6 if not punct and core in NO_END else 0)
+
+def phrase_cost(seconds, count):
+    eff=max(seconds,.3*count)
+    return (2.5*math.log(eff/5.5)**2 if eff>5.5 else .9*math.log(eff/2)**2 if eff<2 else 0)+(.4 if count==1 else .15 if count==2 else 0)
+
+def make_phrases(segments, audio):
+    words=[]; seg_end=set()
     for seg in segments:
         if seg.no_speech_prob > .8: continue
         for w in (seg.words or []):
-            if words and (w.start-words[-1]['end']>.65 or w.end-words[0]['start']>11): flush()
-            words.append({'start':w.start,'end':w.end,'word':w.word})
-            if re.search(r'[.!?][\"\u201d\u2019]?$', w.word.strip()) and w.end-words[0]['start']>.65: flush()
-    flush()
-    if audio is not None: settle_ends(phrases, audio)
+            if not re.search(r'[A-Za-z0-9]',w.word):
+                if words: words[-1]['word']+=w.word
+                continue
+            start=max(float(w.start),words[-1]['start'] if words else 0.)
+            words.append({'start':start,'end':max(float(w.end),start+.02),'word':w.word})
+        if words: seg_end.add(len(words)-1)
+    if not words: return []
+    db,quiet=speech_map(audio); total=len(audio)/16000; n=len(words)
+    gaps=[pause_between(words[k],words[k+1],db,quiet) for k in range(n-1)]
+    on=[sound_start(words[0],quiet)]+[g[1] for g in gaps]; off=[g[0] for g in gaps]+[sound_end(words[-1],quiet)]
+    pause=[b-a for a,b in gaps]
+    score=[break_score(words[k]['word'],words[k+1]['word'],pause[k],k in seg_end) for k in range(n-1)]
+    # Cheapest split overall: phrases of about 2-5.5 s that end at sentence ends, clause breaks or real pauses; never across a pause over 1.6 s.
+    best=[0.]+[math.inf]*n; back=[0]*(n+1)
+    for j in range(n):
+        inner=0.; longest=0.
+        for i in range(j,-1,-1):
+            if i<j:
+                longest=max(longest,pause[i]); inner+=max(0,pause[i]-.7)*1.5
+                if longest>1.6 or off[j]-on[i]>15: break
+            cost=best[i]+phrase_cost(off[j]-on[i],j-i+1)+inner-(score[j]-.7 if j<n-1 else 0)
+            if cost<best[j+1]: best[j+1]=cost; back[j+1]=i
+    spans=[]; j=n
+    while j: spans.append((back[j],j-1)); j=back[j]
+    def cut(k):
+        a,b=gaps[k]; room=b-a
+        if room>=TAIL+LEAD: return a+TAIL,b-LEAD
+        c=a+room*TAIL/(TAIL+LEAD); return c,c
+    phrases=[]
+    for i,j in reversed(spans):
+        start=max(0,on[0]-LEAD) if i==0 else cut(i-1)[1]
+        end=min(total,off[-1]+TAIL) if j==n-1 else cut(j)[0]
+        ws=[dict(w) for w in words[i:j+1]]
+        ws[0]['start']=max(start,min(ws[0]['start'],on[i])); ws[-1]['end']=min(end,max(ws[-1]['end'],off[j]))
+        for w in ws: w['start']=round(w['start'],3); w['end']=round(w['end'],3)
+        phrases.append({'start':round(start,3),'end':round(max(end,start+.1),3),'text':''.join(w['word'] for w in ws).strip(),'words':ws,'practised':False})
     return phrases
-
-def settle_ends(phrases, y, sr=16000):
-    total=len(y)/sr
-    for i,p in enumerate(phrases):
-        lw=p['words'][-1]; last=lw['end']
-        nxt=phrases[i+1]['words'][0]['start']-.05 if i+1<len(phrases) else total
-        limit=min(nxt,last+.8,total)
-        a=int(min(lw['start'],last-.1)*sr); seg=y[max(0,a):int(limit*sr)]; n=len(seg)//160
-        if limit<=last or n<2: continue
-        f=np.sqrt((seg[:n*160].astype(np.float64).reshape(n,160)**2).mean(axis=1))
-        k0=min(n-1,max(0,int((last*sr-max(0,a))/160))); floor=max(f[:k0+1].max()*.025,2e-4); quiet=0; stop=n
-        for k in range(k0,n):
-            quiet=quiet+1 if f[k]<floor else 0
-            if quiet>=15: stop=k-14; break
-        p['end']=round(max(last+.2,min(limit,(max(0,a)+stop*160)/sr+.25)),3)
 
 def job_start(action):
     jid=uuid.uuid4().hex
