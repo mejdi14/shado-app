@@ -20,7 +20,7 @@ The local speech model and dependencies are already installed in this folder. Ke
 4. Choose **Recall** to hide the text and practise from memory.
 5. Choose **Shadow**, put on headphones, and record while the original plays. Recording stops at the end of the phrase. Other modes let you stop the recording yourself; takes are limited to 34 seconds.
 6. Review feedback, replay your take, or listen to **Original → you**.
-7. Use **Edit phrase** to correct transcription or adjust its start/end times. This clears the old feedback for that phrase. Your library saves sessions and their most recent feedback between launches.
+7. Use **Edit phrase** to correct transcription or adjust its start/end times. This clears the old feedback for that phrase. To redo the automatic split for a whole session (for example one imported with an older version), choose **Re-split phrases** (↻ in the browser, the session menu in the Mac and mobile apps). The audio is transcribed again, and that session's phrase edits and feedback are cleared. Your library saves sessions and their most recent feedback between launches.
 
 A built-in Mac voice sample is included to try the workflow. It is labelled as a sample, not a real YouTuber.
 
