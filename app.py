@@ -324,6 +324,19 @@ async def upload(file:UploadFile=File(...), title:str=Form('')):
         finally: source.unlink(missing_ok=True)
     return job_start(action)
 
+@app.post('/api/resplit/{lid}')
+def resplit(lid:str):
+    if read_lesson(lid).get('sample'): raise HTTPException(400,'The guided sample keeps its own phrases.')
+    def action(jid):
+        path=folder(lid)
+        jobs[jid]['message']='Finding new phrases… Long sessions can take a few minutes.'
+        phrases=make_phrases(transcribe(path/'audio.wav'), load_audio(path/'audio.wav'))
+        if not phrases: raise ValueError('No clear English speech found, so the current phrases were kept.')
+        lesson=read_lesson(lid); lesson['phrases']=phrases
+        save_lesson(lesson)
+        return lid
+    return job_start(action)
+
 @app.patch('/api/phrase/{lid}/{index}')
 async def edit(lid:str,index:int,request:Request):
     lesson=read_lesson(lid)
