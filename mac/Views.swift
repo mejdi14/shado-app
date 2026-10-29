@@ -350,6 +350,7 @@ struct PracticePanel: View {
                 Spacer()
                 Menu {
                     Button("Edit this phrase…") { s.stopPlayback(); s.showEdit = true }
+                    if lesson.sample != true { Button("Re-split phrases…") { s.stopPlayback(); s.showResplit = true } }
                     Divider()
                     Button("Delete session…", role: .destructive) { s.stopPlayback(); s.showDelete = true }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(s.locked).help("More")

@@ -33,6 +33,7 @@ enum Mode: String, CaseIterable {
     @Published var showImport = false
     @Published var showEdit = false
     @Published var showDelete = false
+    @Published var showResplit = false
     @Published var showFeedback = false
     @Published var importUpload = false
     @Published var importURL = ""
@@ -340,6 +341,19 @@ enum Mode: String, CaseIterable {
             show("Phrase updated. Record a new take to compare with this version.")
             return nil
         } catch { return error.localizedDescription }
+    }
+
+    func resplitLesson() async {
+        guard let l = lesson else { return }
+        await guarded {
+            defer { busy = nil }
+            stopPlayback()
+            busy = Busy(title: "Finding new phrases", message: "Preparing audio…")
+            let j = try await api.get(JobStart.self, "/api/resplit/" + l.id, method: "POST")
+            _ = try await waitJob(j.jobId, "Finding new phrases")
+            try await loadLesson(l.id)
+            show("New phrases are ready. Start again from the first phrase.")
+        }
     }
 
     func deleteLesson() async {

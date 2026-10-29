@@ -62,6 +62,10 @@ struct StudioHost: View {
             Button("Keep session", role: .cancel) {}
             Button("Delete session", role: .destructive) { Task { await store.deleteLesson() } }
         } message: { Text("Its imported audio, recordings, and feedback will be deleted from this Mac.") }
+        .alert("Re-split this session?", isPresented: $store.showResplit) {
+            Button("Keep phrases", role: .cancel) {}
+            Button("Re-split phrases") { Task { await store.resplitLesson() } }
+        } message: { Text("The audio is transcribed again and divided into new phrases. Your phrase edits and feedback for this session will be cleared.") }
         .task { await store.start() }
     }
 }
