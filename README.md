@@ -15,7 +15,7 @@ The local speech model and dependencies are already installed in this folder. Ke
 ## Your practice loop
 
 1. Choose **Add a voice**, paste a YouTube video link, or upload an audio/video file. Keep imports under 30 minutes and 150 MB.
-2. Wait for local transcription and automatic phrase splitting. The first import may take a little longer while the speech model loads.
+2. Wait for local transcription and automatic phrase splitting. Phrases follow the speaker's sentences and pauses: long sentences are split at commas or natural pauses (most phrases last about 2–6 seconds), and each phrase is cut in the silence between words so the last word plays to the end. The first import may take a little longer while the speech model loads.
 3. Play a phrase. Adjust playback speed or turn on Loop.
 4. Choose **Recall** to hide the text and practise from memory.
 5. Choose **Shadow**, put on headphones, and record while the original plays. Recording stops at the end of the phrase. Other modes let you stop the recording yourself; takes are limited to 34 seconds.
