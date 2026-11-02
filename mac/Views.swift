@@ -292,12 +292,15 @@ struct LibraryView: View {
 
 struct StudioView: View {
     @EnvironmentObject var s: Store
+    @State private var showInspector = true
     var body: some View {
         if let l = s.lesson, let p = s.phrase {
             HStack(spacing: 0) {
-                ScrollView { PracticePanel(lesson: l, phrase: p).padding(32).frame(maxWidth: 880).frame(maxWidth: .infinity) }
-                Rectangle().fill(Color.line).frame(width: 1).ignoresSafeArea()
-                Inspector(lesson: l).frame(width: 330)
+                ScrollView { PracticePanel(lesson: l, phrase: p, showInspector: $showInspector).padding(32).frame(maxWidth: 880).frame(maxWidth: .infinity) }
+                if showInspector {
+                    Rectangle().fill(Color.line).frame(width: 1).ignoresSafeArea()
+                    Inspector(lesson: l).frame(width: 330)
+                }
             }
         } else {
             ScrollView { EmptyStudio() }
@@ -338,6 +341,7 @@ struct PracticePanel: View {
     @EnvironmentObject var s: Store
     let lesson: Lesson
     let phrase: Phrase
+    @Binding var showInspector: Bool
     static let hiddenWidths: [CGFloat] = [70, 44, 92, 58, 76]
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -348,6 +352,9 @@ struct PracticePanel: View {
                     muted("\(lesson.phrases.count) phrases · \(fmt(lesson.duration)) · \(sourceLabel(lesson.source, lesson.sample == true))")
                 }
                 Spacer()
+                Button { showInspector.toggle() } label: { Image(systemName: "sidebar.right") }
+                    .buttonStyle(RoundStyle()).help(showInspector ? "Hide phrases and feedback" : "Show phrases and feedback")
+                    .accessibilityLabel(showInspector ? "Hide phrases and feedback" : "Show phrases and feedback")
                 Menu {
                     Button("Edit this phrase…") { s.stopPlayback(); s.showEdit = true }
                     if lesson.sample != true { Button("Re-split phrases…") { s.stopPlayback(); s.showResplit = true } }
@@ -360,7 +367,6 @@ struct PracticePanel: View {
                 muted(s.mode.hint)
             }
             phraseCard
-            HStack(alignment: .top, spacing: 12) { listen; record; compare }.fixedSize(horizontal: false, vertical: true)
             muted("Space  play / pause   ·   R  record   ·   ← →  change phrase").frame(maxWidth: .infinity)
         }
     }
@@ -382,71 +388,142 @@ struct PracticePanel: View {
                     Button("Show text") { s.concealed = false }.buttonStyle(PillStyle(compact: true))
                 }.frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
             } else {
-                Text(phraseText(phrase)).font(.system(size: 26)).tracking(-0.3).lineSpacing(4).textSelection(.enabled).frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
-                if phrase.latest != nil { HStack(spacing: 14) { legendDot(.good, "Heard clearly"); legendDot(.warn, "Not recognised"); Spacer() } }
+                PracticeSentence(phrase: phrase)
             }
+            controls
+            if phrase.latest != nil { comparison }
+            Rectangle().fill(Color.line).frame(height: 1)
+            deliveryGuide
             VoiceMapView(phrase: phrase)
         }.padding(24).panel(16)
     }
 
-    var listen: some View {
-        StepCard(n: 1, title: "Listen", detail: "Play the original. Repeat it as often as you like.", active: phrase.latest == nil && !s.recording) {
-            HStack(spacing: 8) {
-                Button { s.togglePlay() } label: { Image(systemName: s.isPlaying ? "pause.fill" : "play.fill") }
-                    .buttonStyle(RoundStyle(size: 44, fill: .ink, fg: .inkInverse, border: false)).keyboardShortcut(.space, modifiers: []).help("Play the original phrase (Space)")
-                Spacer(minLength: 0)
-                Menu { ForEach([0.65, 0.8, 1.0, 1.15], id: \.self) { v in Button(speedLabel(v)) { s.speed = v } } } label: { Text(speedLabel(s.speed)) }
-                    .menuStyle(.borderlessButton).fixedSize().disabled(s.locked).help("Playback speed")
-                Button { s.looping.toggle() } label: { Image(systemName: "repeat") }.buttonStyle(RoundStyle(size: 30, fill: s.looping ? .selected : .surface)).help(s.looping ? "Loop is on" : "Loop this phrase")
+    var controls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { playbackButtons; Spacer(minLength: 8); recordButton }
+                VStack(alignment: .leading, spacing: 12) { HStack(spacing: 12) { playbackButtons }; recordButton }
+            }
+            TimelineView(.animation(minimumInterval: 0.1, paused: !s.isPlaying)) { _ in
+                let head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), phrase.end - phrase.start) : s.position
+                HStack(spacing: 10) {
+                    Slider(value: Binding(get: { head }, set: { s.seek($0) }), in: 0...max(0.01, phrase.end - phrase.start))
+                        .controlSize(.small).disabled(s.locked || s.isTakePlaying).accessibilityLabel("Position in example")
+                    Text("\(fmt(head)) / \(fmt(phrase.end - phrase.start))").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                }
             }
         }
     }
 
-    var record: some View {
-        StepCard(n: 2, title: "Record", detail: recordDetail, active: s.recording) {
-            HStack(spacing: 10) {
-                Button { Task { await s.toggleRecording() } } label: { Image(systemName: s.recording ? "stop.fill" : "mic.fill") }
-                    .buttonStyle(RoundStyle(size: 44, fill: .rec, fg: .white, border: false))
-                    .background { if s.recording { Pulse() } }
-                    .keyboardShortcut("r", modifiers: []).disabled(s.starting || s.stopping || s.busy != nil).help(s.recording ? "Stop recording (R)" : "Record a take (R)")
-                if s.recording { VStack(alignment: .leading, spacing: 1) { Text(fmt(s.recordSeconds)).font(.system(size: 15, weight: .semibold)).monospacedDigit(); muted("Recording…") } }
-                else if s.starting || s.stopping { ProgressView().controlSize(.small) }
-            }
+    @ViewBuilder var playbackButtons: some View {
+        Button { s.togglePlay() } label: { Label(s.isPlaying ? "Pause" : "Listen", systemImage: s.isPlaying ? "pause.fill" : "play.fill") }
+            .buttonStyle(PillStyle(primary: phrase.latest == nil)).keyboardShortcut(.space, modifiers: []).disabled(s.locked).help("Play the example (Space)")
+        Menu { ForEach([0.65, 0.8, 1.0, 1.15], id: \.self) { v in Button(speedLabel(v)) { s.speed = v } } } label: { Text(speedLabel(s.speed)) }
+            .menuStyle(.borderlessButton).fixedSize().disabled(s.locked).help("Playback speed")
+        Button { s.looping.toggle() } label: { Image(systemName: "repeat") }
+            .buttonStyle(RoundStyle(size: 30, fill: s.looping ? .selected : .surface)).disabled(s.locked)
+            .help(s.looping ? "Repeat is on" : "Repeat this phrase").accessibilityLabel(s.looping ? "Turn repeat off" : "Turn repeat on")
+    }
+
+    var recordButton: some View {
+        HStack(spacing: 8) {
+            if s.starting || s.stopping { ProgressView().controlSize(.small) }
+            Button { Task { await s.toggleRecording() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: s.recording ? "stop.fill" : "mic.fill").foregroundStyle(Color.rec)
+                    Text(s.recording ? "Stop · \(fmt(s.recordSeconds))" : phrase.latest == nil ? "Record" : "Try again").monospacedDigit()
+                }
+            }.buttonStyle(PillStyle()).keyboardShortcut("r", modifiers: [])
+                .disabled(s.starting || s.stopping || s.busy != nil).help(s.recording ? "Stop recording (R)" : "Record a take (R)")
         }
     }
 
-    var recordDetail: String {
-        switch s.mode {
-        case .listen: return "Say the phrase the way you heard it."
-        case .recall: return "Say it from memory. The text stays hidden."
-        case .shadow: return "The original plays as you record. Speak along, with headphones."
-        }
-    }
-
-    var compare: some View {
-        let takes = phrase.takes ?? 1
-        let buttons = Group {
-            Button { Task { await s.toggleTake() } } label: { Label(s.isTakePlaying ? "Stop" : "Your take", systemImage: s.isTakePlaying ? "stop.fill" : "play.fill") }.buttonStyle(PillStyle(compact: true))
+    var comparison: some View {
+        HStack(spacing: 8) {
+            Button { Task { await s.toggleTake() } } label: { Label(s.isTakePlaying ? "Stop take" : "Your take", systemImage: s.isTakePlaying ? "stop.fill" : "play.fill") }.buttonStyle(PillStyle(compact: true))
             Button { s.compareAB() } label: { Label("Original → you", systemImage: "arrow.left.arrow.right") }.buttonStyle(PillStyle(compact: true)).help("Play the original, then your take")
+            Spacer(minLength: 0)
+        }.disabled(s.locked)
+    }
+
+    var deliveryGuide: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Listen for the delivery", systemImage: "ear").font(.system(size: 12, weight: .semibold))
+            if let v = s.voice, speechSpan(v.src) != nil {
+                Text(v.pauses.isEmpty ? "Keep the words flowing. Listen to how the quieter words fit between the louder ones." : "Follow the phrase groups. Leave a little space at each pause marker.")
+                    .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Listen once, then repeat the timing and the way the words join together.").font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        return StepCard(n: 3, title: "Compare", detail: phrase.latest == nil ? "Record a take first, then listen back." : "\(takes) take\(takes > 1 ? "s" : "") so far. Hear yours, or the original then you.", active: phrase.latest != nil && !s.recording) {
-            ViewThatFits(in: .horizontal) { HStack(spacing: 8) { buttons }; VStack(alignment: .leading, spacing: 6) { buttons } }
-                .disabled(phrase.latest == nil || s.locked)
+    }
+}
+
+struct PracticeSentence: View {
+    @EnvironmentObject var s: Store
+    let phrase: Phrase
+    static let tokenPattern = try! NSRegularExpression(pattern: "[a-z]+(?:['’][a-z]+)?", options: .caseInsensitive)
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 0.05, paused: !s.isPlaying)) { _ in
+            let head = s.isPlaying ? (s.original?.currentTime ?? phrase.start) - phrase.start : nil
+            VStack(alignment: .leading, spacing: 14) {
+                Text(sentence(head)).font(.system(size: 27)).tracking(-0.3).lineSpacing(7).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) { annotationKey }
+                    VStack(alignment: .leading, spacing: 6) { annotationKey }
+                }
+            }.padding(.vertical, 12)
         }
     }
 
-    func phraseText(_ p: Phrase) -> AttributedString {
-        guard let marks = p.latest?.words else { return AttributedString(p.text) }
-        let re = try! NSRegularExpression(pattern: "[a-z]+(?:['’][a-z]+)?", options: .caseInsensitive)
-        let ns = p.text as NSString
-        var out = AttributedString(), last = 0, i = 0
-        for m in re.matches(in: p.text, range: NSRange(location: 0, length: ns.length)) {
+    @ViewBuilder var annotationKey: some View {
+        if let v = s.voice, !(phrase.words ?? []).isEmpty {
+            Text("Bold = louder in example").font(.system(size: 11)).foregroundStyle(.secondary)
+            if !v.pauses.isEmpty { Text("| = pause").font(.system(size: 11)).foregroundStyle(.secondary) }
+        }
+        if phrase.latest?.words.contains(where: { !$0.match }) == true {
+            Text("Underline = check word").font(.system(size: 11)).foregroundStyle(Color.warn)
+        }
+    }
+
+    func sentence(_ head: Double?) -> AttributedString {
+        let ns = phrase.text as NSString, re = Self.tokenPattern
+        let matches = re.matches(in: phrase.text, range: NSRange(location: 0, length: ns.length))
+        let words = phrase.words ?? []
+        let timed = words.enumerated().flatMap { i, w in
+            re.matches(in: w.word, range: NSRange(location: 0, length: (w.word as NSString).length)).map { (i, w, (w.word as NSString).substring(with: $0.range)) }
+        }
+        let aligned = matches.count == timed.count && zip(matches, timed).allSatisfy { a, b in
+            ns.substring(with: a.range).replacingOccurrences(of: "’", with: "'").lowercased() == b.2.replacingOccurrences(of: "’", with: "'").lowercased()
+        }
+        let pauseAfter = Set((s.voice?.pauses ?? []).compactMap { a, b -> Int? in
+            let mid = (a + b) / 2
+            guard let i = words.lastIndex(where: { $0.end - phrase.start <= mid }), i + 1 < words.count,
+                  words[i + 1].start - phrase.start >= mid else { return nil }
+            return i
+        })
+        var out = AttributedString(), last = 0
+        for (i, m) in matches.enumerated() {
             out += AttributedString(ns.substring(with: NSRange(location: last, length: m.range.location - last)))
-            var w = AttributedString(ns.substring(with: m.range))
-            if i < marks.count && marks[i].match { w.foregroundColor = .good } else { w.foregroundColor = .warn; w.underlineStyle = .single }
-            out += w; last = m.range.location + m.range.length; i += 1
+            if aligned, i > 0, timed[i - 1].0 != timed[i].0, pauseAfter.contains(timed[i - 1].0) {
+                var pause = AttributedString("| "); pause.foregroundColor = .warn; out += pause
+            }
+            var word = AttributedString(ns.substring(with: m.range))
+            if aligned {
+                let (wi, wd, _) = timed[i]
+                if s.voice?.stress.contains(wi) == true { word.font = .system(size: 27, weight: .semibold) }
+                if let head, head >= wd.start - phrase.start, head < wd.end - phrase.start { word.backgroundColor = .pitch.opacity(0.22) }
+            }
+            if let marks = phrase.latest?.words, i < marks.count, !marks[i].match { word.foregroundColor = .warn; word.underlineStyle = .single }
+            out += word; last = m.range.location + m.range.length
         }
         out += AttributedString(ns.substring(from: last))
+        let end = ending(s.voice?.src ?? [])
+        if !end.isEmpty {
+            var arrow = AttributedString(end.hasPrefix("goes up") ? " ↗" : end.hasPrefix("goes down") ? " ↘" : " →")
+            arrow.foregroundColor = .pitch; out += arrow
+        }
         return out
     }
 }
@@ -454,82 +531,33 @@ struct PracticePanel: View {
 struct VoiceMapView: View {
     @EnvironmentObject var s: Store
     let phrase: Phrase
+    @State private var expanded = false
     var len: Double { max(phrase.end - phrase.start, 0.01) }
     var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: !(s.recording || s.isPlaying || s.isTakePlaying))) { _ in
-            let you = s.live?.track ?? s.voice?.you, head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), len) : s.position
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 14) {
-                    Button("Replay example") { s.playOriginal() }.buttonStyle(PillStyle(primary: true, compact: true)).disabled(s.locked).help("Play the speaker's phrase from the start")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Position").font(.system(size: 11.5)).foregroundStyle(.secondary)
-                        Slider(value: Binding(get: { head }, set: { s.seek($0) }), in: 0...len).controlSize(.small).disabled(s.locked || s.isTakePlaying)
-                    }
-                    Text("\(clock(head)) / \(clock(len))").font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
-                }
-                VStack(spacing: 14) {
-                    if !s.concealed { Text(sentence(s.voice?.stress ?? [])).font(.system(size: 13.5)).multilineTextAlignment(.center).frame(maxWidth: .infinity) }
-                    Canvas { ctx, size in draw(ctx, size, you, head) }.frame(height: 210)
-                        .accessibilityLabel("The speaker's voice going up and down, with pauses and the words underneath")
+        DisclosureGroup(isExpanded: $expanded) {
+            TimelineView(.animation(minimumInterval: 0.05, paused: !(s.recording || s.isPlaying || s.isTakePlaying))) { _ in
+                let you = s.live?.track ?? s.voice?.you, head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), len) : s.position
+                VStack(alignment: .leading, spacing: 10) {
+                    Canvas { ctx, size in draw(ctx, size, you, head) }.frame(height: 150)
+                        .accessibilityLabel("Relative pitch of the example and your take, with quiet gaps")
                         .help("The line rises when the voice goes up and falls when it goes down. Match its shape, not the speaker's natural pitch.")
-                    if let v = s.voice { guide(v, s.recording ? nil : you) }
-                    else if s.voiceFailed { muted("Couldn't load the speaker's voice. Quit Shadow Studio and any Terminal window running it, then open it again.") }
-                }.padding(18).background(RoundedRectangle(cornerRadius: 14).fill(Color.subtle))
-                HStack(spacing: 18) {
-                    HStack(spacing: 6) { Capsule().fill(Color.pitch).frame(width: 18, height: 3); muted("Pitch movement") }
-                    HStack(spacing: 6) { RoundedRectangle(cornerRadius: 2).fill(Color.warn.opacity(0.1)).overlay(RoundedRectangle(cornerRadius: 2).stroke(Color.warn.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))).frame(width: 12, height: 12); muted("Silence") }
-                    if s.recording || you?.isEmpty == false { HStack(spacing: 6) { Capsule().fill(Color.violet).frame(width: 18, height: 3); muted("You") } }
-                }.frame(maxWidth: .infinity)
+                    HStack(spacing: 14) {
+                        HStack(spacing: 6) { Capsule().fill(Color.pitch).frame(width: 14, height: 3); muted("Example") }
+                        if s.recording || you?.isEmpty == false { HStack(spacing: 6) { Capsule().fill(Color.violet).frame(width: 14, height: 3); muted("You") } }
+                        muted("Shaded gaps = silence")
+                    }
+                    muted("Relative pitch. Saved takes are fitted to the example’s length to compare shape; use playback to compare timing.").fixedSize(horizontal: false, vertical: true)
+                    if s.voiceFailed { muted("Couldn't load pitch detail. Try switching phrases and returning.") }
+                }.padding(12).background(RoundedRectangle(cornerRadius: 12).fill(Color.subtle)).padding(.top, 8)
             }
-        }
+        } label: { Text(expanded ? "Pitch detail" : "Show pitch detail").font(.system(size: 12, weight: .medium)) }
     }
 
     func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
-    func clean(_ w: String) -> String { w.trimmingCharacters(in: .whitespaces.union(.punctuationCharacters)) }
-    func endingText(_ e: String) -> String { e.hasPrefix("goes up") ? "lifts upward" : e.hasPrefix("goes down") ? "settles downward" : e.isEmpty ? "hard to tell" : "stays level" }
-
-    func sentence(_ stress: Set<Int>) -> AttributedString {
-        guard let words = phrase.words, !words.isEmpty else { return AttributedString(phrase.text) }
-        var out = AttributedString()
-        for (i, wd) in words.enumerated() {
-            let t = wd.word.trimmingCharacters(in: .whitespaces), core = clean(t)
-            if i > 0 { out += AttributedString(" ") }
-            guard stress.contains(i), let r = t.range(of: core), !core.isEmpty else { out += AttributedString(t); continue }
-            var w = AttributedString(core); w.backgroundColor = Color.pitch.opacity(0.18)
-            out += AttributedString(String(t[..<r.lowerBound])) + w + AttributedString(String(t[r.upperBound...]))
-        }
-        return out
-    }
-
-    func guide(_ v: VoiceMap, _ you: [Pt]?) -> some View {
-        let words = phrase.words ?? []
-        let strong = v.stress.sorted().filter { $0 < words.count }.prefix(4).map { clean(words[$0].word).lowercased() }.joined(separator: " + ")
-        let after = v.pauses.compactMap { p in words.last { $0.start - phrase.start < p.0 }.map { "“\(clean($0.word))”" } }.reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
-        let n0 = v.pauses.count, rhythm = n0 == 0 ? "In one breath" : n0 == 1 ? (v.pauses[0].1 - v.pauses[0].0 < 0.35 ? "One short pause" : "One pause") : n0 == 2 ? "Two pauses" : "\(n0) pauses"
-        let end = ending(v.src), mine = you?.isEmpty == false ? you : nil
-        let n = pauses(mine ?? []).count, yEnd = ending(mine ?? [])
-        return HStack(alignment: .top, spacing: 16) {
-            tip("Emphasis", strong.isEmpty ? "No word stands out" : String(strong.prefix(1)).uppercased() + String(strong.dropFirst()), nil, nil, false)
-            tip("Rhythm", rhythm, after.isEmpty ? nil : "After " + after.joined(separator: ", "), mine.map { _ in n == 0 ? "no pauses" : "\(n) pause\(n > 1 ? "s" : "")" }, n == n0)
-            tip("Ending", end.isEmpty ? "Hard to tell" : "Voice " + endingText(end), nil, mine.map { _ in endingText(yEnd) }, !end.isEmpty && yEnd == end)
-        }
-    }
-
-    func tip(_ title: String, _ value: String, _ detail: String?, _ yours: String?, _ ok: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.system(size: 11.5)).foregroundStyle(.secondary)
-            Text(value).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-            if let detail { Text(detail).font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
-            if let yours {
-                HStack(spacing: 4) { Text("You: " + yours); if ok { Image(systemName: "checkmark") } }
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(ok ? Color.good : Color.violet).padding(.top, 2)
-            }
-        }.frame(maxWidth: .infinity, alignment: .topLeading)
-    }
 
     func draw(_ ctx: GraphicsContext, _ size: CGSize, _ you: [Pt]?, _ head: Double) {
         let v = s.voice, src = v?.src ?? [], span = max(len, (you?.last?.x ?? 0) + 0.1)
-        let w = size.width, h = size.height, left: CGFloat = 50, right = w - 22, top: CGFloat = 24, bot = h - 58
+        let w = size.width, h = size.height, left: CGFloat = 50, right = w - 22, top: CGFloat = 24, bot = h - 28
         let vals = src.compactMap(\.st).sorted()
         var lo = vals.isEmpty ? -3 : vals[Int(Double(vals.count - 1) * 0.03)], hi = vals.isEmpty ? 3 : vals[Int(Double(vals.count - 1) * 0.97)]
         if hi - lo < 6 { let c = (hi + lo) / 2; lo = c - 3; hi = c + 3 }
@@ -605,18 +633,6 @@ struct VoiceMapView: View {
         if s.recording, let L = s.live { ph = L.x }
         else if s.isTakePlaying, s.live == nil, let v, v.you != nil, let t = s.takePlayer { ph = t.currentTime * v.scale + v.shift }
         else if s.isPlaying || head > 0 { ph = head }
-        if !s.concealed {
-            var last: CGFloat = -1
-            for (i, wd) in (phrase.words ?? []).enumerated() {
-                let a = wd.start - phrase.start, b = wd.end - phrase.start, c = X((a + b) / 2), em = v?.stress.contains(i) ?? false, now = ph.map { $0 >= a && $0 < b } ?? false
-                let word = clean(wd.word)
-                let txt = ctx.resolve(Text(em ? word.uppercased() : word).font(.system(size: 11.5, weight: em ? .semibold : .regular)).foregroundColor(em || now ? .ink : .secondary))
-                let sz = txt.measure(in: size)
-                guard !word.isEmpty, c - sz.width / 2 > last + 6 else { continue }
-                if now { ctx.fill(Path(roundedRect: CGRect(x: c - sz.width / 2 - 6, y: h - sz.height - 8, width: sz.width + 12, height: sz.height + 6), cornerRadius: 6), with: .color(Color.pitch.opacity(0.15))) }
-                ctx.draw(txt, at: CGPoint(x: c, y: h - 5), anchor: .bottom); last = c + sz.width / 2
-            }
-        }
         if let ph, ph >= 0 {
             ctx.stroke(Path { $0.move(to: CGPoint(x: X(ph), y: top - 2)); $0.addLine(to: CGPoint(x: X(ph), y: bot + 2)) }, with: .color(Color.ink.opacity(0.75)), lineWidth: 1.5)
             if let st = stAt(ph, s.recording ? (you ?? []) : src) { ctx.fill(Path(ellipseIn: CGRect(x: X(ph) - 4, y: Y(st) - 4, width: 8, height: 8)), with: .color(.ink)) }
