@@ -103,6 +103,7 @@ CLAUSE_START={'and','but','or','so','because','although','though','while','where
 NO_END={'a','an','the','my','your','his','its','our','their','this','these','those','of','to','in','on','at','for','with','from','by','about','into','onto','than','and','or','but','so','because','if','that','which','who','whose','i','we','they','he','she','is','are','was','were','am','be','been','do','does','did','have','has','had','will','would','can','could','should','shall','may','might','must','very','such',"i'm","you're","we're","they're","it's","that's","there's","he's","she's","i've","you've","we've","they've","i'll","you'll","we'll","they'll","i'd","you'd","we'd","they'd","don't","doesn't","didn't","can't","won't","isn't","aren't","wasn't","weren't","let's",'gonna','wanna','gotta'}
 ABBREV={'mr','mrs','ms','dr','prof','st','vs','jr','sr'}
 TAIL,LEAD=.3,.15
+AUTO_PHRASE_MAX=8.
 
 def speech_map(y):
     # 10 ms loudness frames and a quiet mask judged against the local noise floor, so tails count as sound in clean and noisy audio alike.
@@ -160,14 +161,18 @@ def sound_end(w, quiet):
     s=rs[0][0]
     return s/100
 
-def break_score(word, nxt, pause, seg_end):
-    tail=word.strip().rstrip('"\'\u201d\u2019)]}'); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'")); head=re.sub(r"[^a-z']","",nxt.lower().replace('\u2019',"'"))
-    if core in ABBREV or re.fullmatch(r"(?:[A-Za-z]\.){2,}",tail): punct=0
+def break_punctuation(word, nxt):
+    tail=word.strip().rstrip('"\'\u201d\u2019)]}'); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'"))
+    if core in ABBREV or re.fullmatch(r"(?:[A-Za-z]\.)+",tail): punct=0
     elif tail.endswith(('...','\u2026',';',':')): punct=.7
     elif tail.endswith(('.','!','?')): punct=1
     elif tail.endswith(('\u2014','\u2013','-')) or nxt.strip().startswith(('\u2014','\u2013','-')): punct=.6
     elif tail.endswith(','): punct=.35
     else: punct=0
+    return punct
+
+def break_score(word, nxt, pause, seg_end):
+    tail=word.strip().rstrip('"\'\u201d\u2019)]}'); punct=break_punctuation(word,nxt); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'")); head=re.sub(r"[^a-z']","",nxt.lower().replace('\u2019',"'"))
     score=2*punct+.5*(1-math.exp(-pause/.25))+(.1 if seg_end else 0)-(.15 if pause<.05 else 0)+(.2 if head in CLAUSE_START else .1 if head=='that' else 0)
     return score-(.6 if not punct and core in NO_END else 0)
 
@@ -192,15 +197,18 @@ def make_phrases(segments, audio):
     on=[sound_start(words[0],quiet)]+[g[1] for g in gaps]; off=[g[0] for g in gaps]+[sound_end(words[-1],quiet)]
     pause=[b-a for a,b in gaps]
     score=[break_score(words[k]['word'],words[k+1]['word'],pause[k],k in seg_end) for k in range(n-1)]
-    # Prefer longer connected phrases to an uncertain cut. Word-timing cuts are a last resort at the 30 s practice limit.
-    best=[(0,0.)]+[(math.inf,math.inf)]*n; back=[0]*(n+1)
+    sentence=[break_punctuation(words[k]['word'],words[k+1]['word'])==1 for k in range(n-1)]
+    # Sentence endings and short practice chunks take priority; prefer an acoustic pause when choosing other cuts.
+    best=[0.]+[math.inf]*n; back=[0]*(n+1)
     for j in range(n):
         inner=0.; longest=0.
         for i in range(j,-1,-1):
             if i<j:
+                if sentence[i] or off[j]-on[i]+TAIL+LEAD>AUTO_PHRASE_MAX: break
                 longest=max(longest,pause[i]); inner+=max(0,pause[i]-.7)*1.5
-                if longest>1.6 or off[j]-on[i]+TAIL+LEAD>30: break
-            cost=(best[i][0]+int(j<n-1 and not pause[j]),best[i][1]+phrase_cost(off[j]-on[i],j-i+1)+inner-(score[j]-.7 if j<n-1 else 0))
+                if longest>1.6: break
+            cost=best[i]+phrase_cost(off[j]-on[i],j-i+1)+inner
+            if j<n-1: cost+=(1.5 if not pause[j] else 0)-score[j]+.7
             if cost<best[j+1]: best[j+1]=cost; back[j+1]=i
     spans=[]; j=n
     while j: spans.append((back[j],j-1)); j=back[j]
