@@ -138,19 +138,22 @@ enum Mode: String, CaseIterable {
         isPlaying = false; isTakePlaying = false
     }
 
-    func playOriginal(once: Bool = false, rate: Double? = nil, onDone: (() -> Void)? = nil) {
+    func playOriginal(once: Bool = false, rate: Double? = nil, excerpt: ClosedRange<Double>? = nil, onDone: (() -> Void)? = nil) {
         guard let p = original, let ph = phrase else { return }
         stopPlayback()
-        p.rate = Float(rate ?? speed); p.currentTime = ph.start
+        let from = max(ph.start, min(ph.end, ph.start + (excerpt?.lowerBound ?? 0)))
+        let until = min(ph.end, max(from, ph.start + (excerpt?.upperBound ?? (ph.end - ph.start))))
+        guard until > from else { return }
+        p.rate = Float(rate ?? speed); p.currentTime = from; position = from - ph.start
         playbackDone = onDone; playOnce = once
         p.play(); isPlaying = true
         pollTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000)
                 guard !Task.isCancelled, let ph = phrase else { return }
-                if p.currentTime >= ph.end || !p.isPlaying {
-                    if looping && !playOnce && !recording { p.currentTime = ph.start; p.play() }
-                    else { let done = playbackDone; stopPlayback(); position = ph.end - ph.start; done?(); return }
+                if p.currentTime >= until || !p.isPlaying {
+                    if looping && !playOnce && !recording { p.currentTime = from; p.play() }
+                    else { let done = playbackDone; stopPlayback(); position = until - ph.start; done?(); return }
                 }
             }
         }

@@ -4,7 +4,7 @@ struct Mark: Codable { let word: String; let match: Bool }
 struct Curves: Codable { let original: [Double]; let you: [Double] }
 struct TakeResult: Codable {
     let id: String; let audio: String; let accuracy: Int; let rhythm: Int; let intonation: Int?
-    let words: [Mark]; let curves: Curves; let tips: [String]; let playbackSpeed: Double?
+    let words: [Mark]; let curves: Curves; let tips: [String]; let playbackSpeed: Double?; let durationRatio: Double?
 }
 struct Word: Codable { let start: Double; let end: Double; let word: String }
 struct Phrase: Codable { var start: Double; var end: Double; var text: String; var words: [Word]?; var practised: Bool?; var latest: TakeResult?; var takes: Int? }

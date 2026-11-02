@@ -393,7 +393,8 @@ struct PracticePanel: View {
             controls
             if phrase.latest != nil { comparison }
             Rectangle().fill(Color.line).frame(height: 1)
-            deliveryGuide
+            if phrase.latest != nil { NextStepView(phrase: phrase) }
+            else { deliveryGuide }
             VoiceMapView(phrase: phrase)
         }.padding(24).panel(16)
     }
@@ -433,7 +434,7 @@ struct PracticePanel: View {
                     Image(systemName: s.recording ? "stop.fill" : "mic.fill").foregroundStyle(Color.rec)
                     Text(s.recording ? "Stop · \(fmt(s.recordSeconds))" : phrase.latest == nil ? "Record" : "Try again").monospacedDigit()
                 }
-            }.buttonStyle(PillStyle()).keyboardShortcut("r", modifiers: [])
+            }.buttonStyle(PillStyle(primary: phrase.latest != nil || s.recording)).keyboardShortcut("r", modifiers: [])
                 .disabled(s.starting || s.stopping || s.busy != nil).help(s.recording ? "Stop recording (R)" : "Record a take (R)")
         }
     }
@@ -450,7 +451,7 @@ struct PracticePanel: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Listen for the delivery", systemImage: "ear").font(.system(size: 12, weight: .semibold))
             if let v = s.voice, speechSpan(v.src) != nil {
-                Text(v.pauses.isEmpty ? "Keep the words flowing. Listen to how the quieter words fit between the louder ones." : "Follow the phrase groups. Leave a little space at each pause marker.")
+                Text(v.pauses.isEmpty ? "Keep the words flowing. Listen to how the quieter words fit between the louder ones." : s.concealed || (phrase.words ?? []).isEmpty ? "Listen for where the speaker pauses, then repeat those phrase groups." : "Follow the phrase groups. Leave a little space at each pause marker.")
                     .font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Listen once, then repeat the timing and the way the words join together.").font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -485,18 +486,28 @@ struct PracticeSentence: View {
         if phrase.latest?.words.contains(where: { !$0.match }) == true {
             Text("Underline = check word").font(.system(size: 11)).foregroundStyle(Color.warn)
         }
+        if !ending(s.voice?.src ?? []).isEmpty {
+            Text("Arrow = voice ending").font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+
+    static func timedTokens(_ phrase: Phrase) -> [(Int, Word)] {
+        let ns = phrase.text as NSString, re = tokenPattern
+        let matches = re.matches(in: phrase.text, range: NSRange(location: 0, length: ns.length))
+        let timed = (phrase.words ?? []).enumerated().flatMap { i, w in
+            re.matches(in: w.word, range: NSRange(location: 0, length: (w.word as NSString).length)).map { (i, w, (w.word as NSString).substring(with: $0.range)) }
+        }
+        guard matches.count == timed.count, zip(matches, timed).allSatisfy({ a, b in
+            ns.substring(with: a.range).replacingOccurrences(of: "’", with: "'").lowercased() == b.2.replacingOccurrences(of: "’", with: "'").lowercased()
+        }) else { return [] }
+        return timed.map { ($0.0, $0.1) }
     }
 
     func sentence(_ head: Double?) -> AttributedString {
         let ns = phrase.text as NSString, re = Self.tokenPattern
         let matches = re.matches(in: phrase.text, range: NSRange(location: 0, length: ns.length))
-        let words = phrase.words ?? []
-        let timed = words.enumerated().flatMap { i, w in
-            re.matches(in: w.word, range: NSRange(location: 0, length: (w.word as NSString).length)).map { (i, w, (w.word as NSString).substring(with: $0.range)) }
-        }
-        let aligned = matches.count == timed.count && zip(matches, timed).allSatisfy { a, b in
-            ns.substring(with: a.range).replacingOccurrences(of: "’", with: "'").lowercased() == b.2.replacingOccurrences(of: "’", with: "'").lowercased()
-        }
+        let words = phrase.words ?? [], timed = Self.timedTokens(phrase)
+        let aligned = matches.count == timed.count
         let pauseAfter = Set((s.voice?.pauses ?? []).compactMap { a, b -> Int? in
             let mid = (a + b) / 2
             guard let i = words.lastIndex(where: { $0.end - phrase.start <= mid }), i + 1 < words.count,
@@ -511,7 +522,7 @@ struct PracticeSentence: View {
             }
             var word = AttributedString(ns.substring(with: m.range))
             if aligned {
-                let (wi, wd, _) = timed[i]
+                let (wi, wd) = timed[i]
                 if s.voice?.stress.contains(wi) == true { word.font = .system(size: 27, weight: .semibold) }
                 if let head, head >= wd.start - phrase.start, head < wd.end - phrase.start { word.backgroundColor = .pitch.opacity(0.22) }
             }
@@ -525,6 +536,57 @@ struct PracticeSentence: View {
             arrow.foregroundColor = .pitch; out += arrow
         }
         return out
+    }
+}
+
+struct NextStepView: View {
+    @EnvironmentObject var s: Store
+    let phrase: Phrase
+    var body: some View {
+        let next = cue
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.turn.up.right").foregroundStyle(Color.violet)
+                Text("Try this next").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("Take \(phrase.takes ?? 1)").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            Text(next.title).font(.system(size: 15, weight: .semibold))
+            Text(next.detail).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button { s.playOriginal(once: true, rate: phrase.latest?.playbackSpeed ?? 1, excerpt: next.excerpt) } label: {
+                Label(next.excerpt == nil ? "Replay example" : "Hear this part", systemImage: "play.fill")
+            }.buttonStyle(PillStyle(compact: true)).disabled(s.locked)
+            muted("Practice suggestion · compare by listening").font(.system(size: 11))
+        }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(RoundedRectangle(cornerRadius: 12).fill(Color.violet.opacity(0.08)))
+    }
+
+    var cue: (title: String, detail: String, excerpt: ClosedRange<Double>?) {
+        let r = phrase.latest, len = max(0.01, phrase.end - phrase.start)
+        if let marks = r?.words, let i = marks.firstIndex(where: { !$0.match }) {
+            let timed = PracticeSentence.timedTokens(phrase)
+            var excerpt: ClosedRange<Double>? = nil
+            if i < timed.count {
+                let a = max(0, timed[max(0, i - 1)].1.start - phrase.start - 0.12)
+                let b = min(len, timed[min(timed.count - 1, i + 1)].1.end - phrase.start + 0.15)
+                if b > a { excerpt = a...b }
+            }
+            let detail = s.concealed ? "A word wasn’t recognised in your take. Listen to this part, then repeat it with the surrounding words. Recognition can make mistakes." : "Speech recognition didn’t match “\(marks[i].word)”. Listen to it with the surrounding words, then try again. Recognition can make mistakes."
+            return ("Check one word in context", detail, excerpt)
+        }
+        if let ratio = r?.durationRatio, ratio > 1.15 {
+            return ("Keep the pace moving", "Your take was about \(Int(((ratio - 1) * 100).rounded()))% longer than the example at the practice speed. Listen for words that run together, then try a smoother rhythm.", nil)
+        }
+        if let ratio = r?.durationRatio, ratio < 0.85 {
+            return ("Give the phrase more time", "Your take was about \(Int(((1 - ratio) * 100).rounded()))% shorter than the example at the practice speed. Listen for words the speaker holds longer, then give those words more room.", nil)
+        }
+        if let v = s.voice, let you = v.you, !you.isEmpty {
+            let target = ending(v.src), mine = ending(you)
+            if !target.isEmpty, !mine.isEmpty, target != mine {
+                let action = target.hasPrefix("goes up") ? "Let your voice rise at the end" : target.hasPrefix("goes down") ? "Let your voice fall at the end" : "Keep the ending level"
+                return (action, "The pitch estimate suggests a different ending in your take. Listen to the final words and copy the direction of the voice.", max(0, len - 1.5)...len)
+            }
+        }
+        return ("Focus on the rhythm", "Listen to which words stand out and how the quieter words fit between them. Replay your take, then try copying that pattern.", nil)
     }
 }
 
@@ -708,7 +770,7 @@ struct FeedbackPanel: View {
                 }.frame(maxWidth: .infinity).padding(.vertical, 28)
             }
             DisclosureGroup {
-                Text("These are practice estimates, not validated pronunciation grades. Word accuracy compares speech recognition with the phrase text; it does not assess individual speech sounds. Rhythm uses duration and loudness patterns. Intonation compares relative pitch contours; music and noisy recordings can affect it. Audio extraction keeps background sounds—it does not isolate the speaker. The line under the phrase follows the voice going up and down, relative to each speaker's own pitch. Pauses are quiet gaps of 0.15 seconds or more. Bold words are simply the loudest ones, which are often but not always the stressed words. A saved take is stretched to the speaker's length so the lines line up.").font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
+                Text("These are practice estimates, not validated pronunciation grades. Word accuracy compares speech recognition with the phrase text; it does not assess individual speech sounds. Rhythm uses duration and loudness patterns. Intonation compares relative pitch contours; music and noisy recordings can affect it. Audio extraction keeps background sounds—it does not isolate the speaker. Bold words are louder in the example, which does not always mean stressed. Pause markers indicate estimated quiet gaps of 0.15 seconds or more between words. The ending arrow estimates the final pitch direction. Show pitch detail opens the relative pitch curves. A saved take is stretched to the speaker's length in that chart; pace suggestions use the original duration comparison instead.").font(.system(size: 11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 6)
             } label: { Text("How feedback works").font(.system(size: 12, weight: .medium)) }
         }.padding(20)
     }
