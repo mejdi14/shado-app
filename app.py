@@ -116,7 +116,7 @@ def speech_map(y):
         from faster_whisper.vad import get_vad_model
         padded=np.pad(y,(0,512-len(y)%512))
         vad=np.asarray(get_vad_model()(padded),dtype=np.float32).reshape(len(padded)//512,-1)[:,0]
-        quiet|=(vad[np.minimum(len(vad)-1,(np.arange(n)*160+80)//512)]<.15)&(db<thr+8)
+        quiet&=(vad[np.minimum(len(vad)-1,(np.arange(n)*160+80)//512)]<.35)|(db<thr-10)
     except Exception: pass
     return db,quiet
 
@@ -124,42 +124,39 @@ def quiet_runs(mask):
     edges=np.flatnonzero(np.diff(np.concatenate(([False],mask,[False])).astype(np.int8)))
     return [[int(s),int(e)] for s,e in zip(edges[::2],edges[1::2])]
 
-def pause_between(a, b, db, quiet):
-    # Whisper's word ends are often early (the end of "word." is taken from before the period token), so look for the real silence around the gap.
-    n=len(quiet); g0,g1=sorted((a['end'],b['start']))
-    lo=max(0,int((a['start']+.03)*100)); hi=min(n,int((b['end']-.03)*100))
-    i0=min(n-1,max(0,int(max(a['start']+.05,g0-.12)*100))); i1=min(n,max(i0+3,int(min(b['end']-.05,g1+.25)*100)))
-    rs=[[s+i0,e+i0] for s,e in quiet_runs(quiet[i0:i1])]
-    if rs:
-        while rs[0][0]>lo and quiet[rs[0][0]-1]: rs[0][0]-=1
-        while rs[-1][1]<hi and quiet[rs[-1][1]]: rs[-1][1]+=1
-    best=None
-    for s,e in rs:
-        dur=(e-s)/100; dist=max(0,g0-e/100,s/100-g1)
-        if dur>=.05 and (dur>=.12 or dist<=.04) and (best is None or dur-.6*dist>best[0]): best=(dur-.6*dist,s,e)
-    if best is None:
-        c0=min(n-1,max(0,int((g0-.06)*100))); c1=min(n,max(c0+1,int((g1+.08)*100)))
-        v=c0+int(np.argmin(db[c0:c1]+12*np.abs(np.arange(c0,c1)/100-(g0+g1)/2)))
-        return v/100,v/100
-    _,s,e=best
-    s=min([r[0] for r in rs if r[1]<=s and r[1]-r[0]>=10 and r[0]>=(g0-.05)*100]+[s])
-    e=max([r[1] for r in rs if r[0]>=e and r[1]-r[0]>=10 and r[1]<=(g1+.05)*100]+[e])
-    return s/100,e/100
+def pause_between(a, b, quiet):
+    # Only one continuous pause can define a cut. Joining separate quiet runs can swallow a consonant between them.
+    n=len(quiet); g0,g1=a['end'],b['start']
+    lo=max(0,math.ceil(max((a['start']+g0)/2,g0-.12)*100)); hi=min(n,math.floor(min((g1+b['end'])/2,g1+.12)*100))
+    candidates=[]
+    for s,e in quiet_runs(quiet[lo:max(lo,hi)]):
+        s=(s+lo)/100; e=(e+lo)/100
+        if e-s<.12: continue
+        dist=max(0,g0-e,s-g1)
+        if dist>.06: continue
+        # Sound after this pause but before the next word may be the previous word's final consonant.
+        tail=quiet[round(e*100):max(round(e*100),math.floor((g1-.03)*100))]
+        if np.count_nonzero(~tail)>2: continue
+        candidates.append((dist,-min(e-s,.4),s,e))
+    if candidates:
+        _,_,s,e=min(candidates)
+        return s,e
+    # This is only a word-timing fallback for speech with no safe pause, not an acoustic boundary.
+    c=max((a['start']+g0)/2,min((g0+g1)/2,(g1+b['end'])/2))
+    return c,c
 
 def sound_start(w, quiet):
-    n=len(quiet); i0=min(n-1,max(0,int((w['start']-1.5)*100))); i1=min(n,max(i0+1,int(min(w['end']-.05,w['start']+.12)*100)))
+    n=len(quiet); i0=min(n-1,max(0,int((w['start']-.3)*100))); i1=min(n,max(i0,int(w['start']*100)))
     rs=[[s+i0,e+i0] for s,e in quiet_runs(quiet[i0:i1]) if e-s>=15 or s+i0==0]
     if not rs: return w['start']
     e=rs[-1][1]
-    while e<min(n,int((w['end']-.05)*100)) and quiet[e]: e+=1
     return e/100
 
 def sound_end(w, quiet):
-    n=len(quiet); i0=min(n-1,max(0,int(max(w['start']+.05,w['end']-.12)*100))); i1=min(n,max(i0+1,int((w['end']+1.5)*100)))
+    n=len(quiet); i0=min(n-1,max(0,math.ceil(w['end']*100))); i1=min(n,max(i0+1,int((w['end']+.6)*100)))
     rs=[[s+i0,e+i0] for s,e in quiet_runs(quiet[i0:i1]) if e-s>=15 or e+i0==n]
     if not rs: return min(n/100,w['end']+.2)
     s=rs[0][0]
-    while s>max(0,int((w['start']+.05)*100)) and quiet[s-1]: s-=1
     return s/100
 
 def break_score(word, nxt, pause, seg_end):
@@ -170,7 +167,7 @@ def break_score(word, nxt, pause, seg_end):
     elif tail.endswith(('\u2014','\u2013','-')) or nxt.strip().startswith(('\u2014','\u2013','-')): punct=.6
     elif tail.endswith(','): punct=.35
     else: punct=0
-    score=.8*punct+.5*(1-math.exp(-pause/.25))+(.1 if seg_end else 0)-(.15 if pause<.05 else 0)+(.2 if head in CLAUSE_START else .1 if head=='that' else 0)
+    score=2*punct+.5*(1-math.exp(-pause/.25))+(.1 if seg_end else 0)-(.15 if pause<.05 else 0)+(.2 if head in CLAUSE_START else .1 if head=='that' else 0)
     return score-(.6 if not punct and core in NO_END else 0)
 
 def phrase_cost(seconds, count):
@@ -189,27 +186,27 @@ def make_phrases(segments, audio):
             words.append({'start':start,'end':max(float(w.end),start+.02),'word':w.word})
         if words: seg_end.add(len(words)-1)
     if not words: return []
-    db,quiet=speech_map(audio); total=len(audio)/16000; n=len(words)
-    gaps=[pause_between(words[k],words[k+1],db,quiet) for k in range(n-1)]
+    _,quiet=speech_map(audio); total=len(audio)/16000; n=len(words)
+    gaps=[pause_between(words[k],words[k+1],quiet) for k in range(n-1)]
     on=[sound_start(words[0],quiet)]+[g[1] for g in gaps]; off=[g[0] for g in gaps]+[sound_end(words[-1],quiet)]
     pause=[b-a for a,b in gaps]
     score=[break_score(words[k]['word'],words[k+1]['word'],pause[k],k in seg_end) for k in range(n-1)]
-    # Cheapest split overall: phrases of about 2-5.5 s that end at sentence ends, clause breaks or real pauses; never across a pause over 1.6 s.
-    best=[0.]+[math.inf]*n; back=[0]*(n+1)
+    # Prefer longer connected phrases to an uncertain cut. Word-timing cuts are a last resort at the 30 s practice limit.
+    best=[(0,0.)]+[(math.inf,math.inf)]*n; back=[0]*(n+1)
     for j in range(n):
         inner=0.; longest=0.
         for i in range(j,-1,-1):
             if i<j:
                 longest=max(longest,pause[i]); inner+=max(0,pause[i]-.7)*1.5
-                if longest>1.6 or off[j]-on[i]>15: break
-            cost=best[i]+phrase_cost(off[j]-on[i],j-i+1)+inner-(score[j]-.7 if j<n-1 else 0)
+                if longest>1.6 or off[j]-on[i]+TAIL+LEAD>30: break
+            cost=(best[i][0]+int(j<n-1 and not pause[j]),best[i][1]+phrase_cost(off[j]-on[i],j-i+1)+inner-(score[j]-.7 if j<n-1 else 0))
             if cost<best[j+1]: best[j+1]=cost; back[j+1]=i
     spans=[]; j=n
     while j: spans.append((back[j],j-1)); j=back[j]
     def cut(k):
         a,b=gaps[k]; room=b-a
         if room>=TAIL+LEAD: return a+TAIL,b-LEAD
-        c=a+room*TAIL/(TAIL+LEAD); return c,c
+        c=(a+b)/2; return c,c
     phrases=[]
     for i,j in reversed(spans):
         start=max(0,on[0]-LEAD) if i==0 else cut(i-1)[1]

@@ -15,7 +15,7 @@ The local speech model and dependencies are already installed in this folder. Ke
 ## Your practice loop
 
 1. Choose **Add a voice**, paste a YouTube video link, or upload an audio/video file. Keep imports under 30 minutes and 150 MB.
-2. Wait for local transcription and automatic phrase splitting. Phrases follow the speaker's sentences and pauses: long sentences are split at commas or natural pauses (most phrases last about 2–6 seconds), and each phrase is cut in the silence between words so the last word plays to the end. The first import may take a little longer while the speech model loads.
+2. Wait for local transcription and automatic phrase splitting. Sentence endings and clear pauses guide the split, with a short lead-in and tail where there is room. The splitter requires a continuous quiet gap near the word boundary and keeps connected speech together when the boundary is uncertain, so some phrases are longer than the usual 2–6 seconds. If connected speech exceeds the 30-second practice limit, it falls back to estimated word timing; those cuts may need **Edit phrase**. Music, overlapping voices and inaccurate word timestamps can still affect boundaries. The first import may take a little longer while the speech model loads.
 3. Play a phrase. Adjust playback speed or turn on Loop.
 4. Choose **Recall** to hide the text and practise from memory.
 5. Choose **Shadow**, put on headphones, and record while the original plays. Recording stops at the end of the phrase. Other modes let you stop the recording yourself; takes are limited to 34 seconds.
@@ -62,7 +62,11 @@ Use content you have permission to import. Links can fail because of YouTube acc
 
 Speech transcription uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper), with the English base model. No paid services are required.
 
+The boundary changes follow the principle described in [stable-ts gap adjustment](https://github.com/jianfch/stable-ts#gap-adjustment): use the actual non-speech gap around adjacent words, rather than treating recognition timestamps as exact audio cuts. This app uses its existing loudness analysis and bundled Silero VAD for that step; it does not install stable-ts. [WhisperX](https://github.com/m-bain/whisperX) takes a different approach, adding a separate wav2vec2 forced-alignment model for word timing. That extra model and its dependencies are not included here.
+
 ## Verification on this Mac
+
+The latest sentence-boundary changes have been syntax-checked only. Their playback accuracy has not been tested; the checks below describe the earlier version.
 
 Verified local upload, audio conversion, English transcription, automatic phrase boundaries, recording analysis and replay, silence rejection, persistence, phrase correction, and comparison at slower playback speeds. Browser checks covered phrase navigation, hidden-text recall, and the import form. Microphone capture still requires your browser permission when you first use it.
 
