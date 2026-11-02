@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'models'))
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-import json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket
+import json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
 import numpy as np
@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 DATA = ROOT / 'data'
 DATA.mkdir(exist_ok=True)
 TOKEN = secrets.token_urlsafe(32)
+ENGINE_SIGNATURE = hashlib.sha256(str(ROOT).encode()+b'\0'+Path(__file__).read_bytes()).hexdigest()
 PORT = int(os.environ.get('SHADOW_PORT', '8765'))
 LAN = os.environ.get('SHADOW_LAN') == '1'
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
@@ -483,7 +484,7 @@ def delete(lid:str):
     read_lesson(lid); shutil.rmtree(folder(lid)); return {'ok':True}
 
 @app.get('/api/status')
-def status(): return {'local':True,'modelReady':model is not None,'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists())}
+def status(): return JSONResponse({'local':True,'modelReady':model is not None,'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists())},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})
 
 if __name__=='__main__':
     os.environ['PATH']='/opt/homebrew/bin:'+os.environ.get('PATH','')

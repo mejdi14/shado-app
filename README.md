@@ -8,7 +8,7 @@ Double-click **Start Shadow Studio.command** in Finder. It opens the studio in y
 
 ## Mac app
 
-Double-click **Build Mac App.command** once to create **Shadow Studio.app** in this folder. It is a native SwiftUI app (no browser or web view): the same practice loop, library, import, phrase editing and feedback, with native playback and microphone recording. Behind the scenes it starts the local Python engine from this folder (transcription, YouTube import, scoring) and stops it when you quit, so scores and your **data/** folder are identical to the browser version. Microphone access is requested the first time you record. Drag the app to the Dock or Applications; keep this folder where it is (rebuild the app if you move it). Building needs macOS 13+ and the Xcode Command Line Tools (`xcode-select --install`). If macOS blocks the app on first launch, right-click it and choose Open. If it can't start, it shows why, and the engine log is at `~/Library/Logs/Shadow Studio.log`.
+Double-click **Build Mac App.command** once to create **Shadow Studio.app** in this folder. It is a native SwiftUI app (no browser or web view): the same practice loop, library, import, phrase editing and feedback, with native playback and microphone recording. Behind the scenes it starts the local Python engine from this folder (transcription, YouTube import, scoring) and stops that engine when you quit. If the browser launcher already started a matching engine, the Mac app shares it; that Terminal engine keeps running until you stop it with Control-C. Scores and your **data/** folder are identical to the browser version. Microphone access is requested the first time you record. Drag the app to the Dock or Applications; keep this folder where it is (rebuild the app if you move it). Building needs macOS 13+ and the Xcode Command Line Tools (`xcode-select --install`). If macOS blocks the app on first launch, right-click it and choose Open. If it can't start, it shows why, and the engine log is at `~/Library/Logs/Shadow Studio.log`.
 
 The local speech model and dependencies are already installed in this folder. Keep the whole **Shadow Studio** folder together. The app listens only on this Mac. For a phone on the same Wi-Fi (no USB), you can opt in with `SHADOW_LAN=1 "./Start Shadow Studio.command"`: the engine then also answers on your local network and prints the address to type into the phone app. Anyone on that Wi-Fi could reach your lessons and recordings while it runs, so only use it on a network you trust.
 
@@ -58,6 +58,7 @@ Use content you have permission to import. Links can fail because of YouTube acc
 - If the microphone was denied, enable it for this local address in your browser's website settings.
 - If YouTube refuses a link, upload a file you can use instead.
 - If the port is occupied, start with `SHADOW_PORT=8766` or stop the other copy.
+- After an engine update, stop **Start Shadow Studio.command** with Control-C in its Terminal window, quit the Mac app, and reopen it. Rebuilding the Mac app does not restart an engine that was launched in Terminal. The Mac app now checks that the running engine matches this folder's current code and reports an outdated engine instead of silently reusing it. Existing lessons need **Re-split phrases** to get new boundaries; this clears their phrase edits and feedback.
 - On a different Mac, the launcher needs Python 3.12+ and FFmpeg. The launcher installs Python dependencies into its own environment when needed. Its initial setup needs an internet connection.
 
 Speech transcription uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper), with the English base model. No paid services are required.
@@ -66,7 +67,7 @@ The boundary changes follow the principle described in [stable-ts gap adjustment
 
 ## Verification on this Mac
 
-The latest sentence-boundary changes have been syntax-checked only. Their playback accuracy has not been tested; the checks below describe the earlier version.
+The latest sentence-boundary and engine startup changes have had Python syntax checking only. Their playback accuracy and Mac startup behavior have not been tested; the checks below describe the earlier version.
 
 Verified local upload, audio conversion, English transcription, automatic phrase boundaries, recording analysis and replay, silence rejection, persistence, phrase correction, and comparison at slower playback speeds. Browser checks covered phrase navigation, hidden-text recall, and the import form. Microphone capture still requires your browser permission when you first use it.
 

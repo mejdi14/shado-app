@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 let port = ProcessInfo.processInfo.environment["SHADOW_PORT"] ?? "8765"
 let base = URL(string: "http://127.0.0.1:\(port)")!
@@ -56,16 +57,28 @@ final class API {
         return candidates.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("app.py").path) }
     }
 
-    func serverUp() async -> Bool {
-        var req = URLRequest(url: base.appendingPathComponent("api/status")); req.timeoutInterval = 1.5
-        guard let (data, _) = try? await URLSession.shared.data(for: req) else { return false }
-        return String(data: data, encoding: .utf8)?.contains("\"local\":true") == true
+    func serverUp(expected: String) async throws -> Bool {
+        var req = URLRequest(url: base.appendingPathComponent("api/status"), cachePolicy: .reloadIgnoringLocalCacheData); req.timeoutInterval = 1.5
+        guard let (data, response) = try? await URLSession.shared.data(for: req) else { return false }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              String(data: data, encoding: .utf8)?.contains("\"local\":true") == true else {
+            throw AppError(message: "Another app is using Shadow Studio's port (\(port)). Close it, then click Try again.")
+        }
+        guard http.value(forHTTPHeaderField: "X-Shadow-Engine") == expected else {
+            throw AppError(message: "An outdated engine or another copy of Shadow Studio is still running. In its Terminal window, press Control-C to stop “Start Shadow Studio.command”, or quit the other Mac app. Then click Try again. Rebuilding alone does not restart a Terminal engine.")
+        }
+        return true
     }
 
     func start() async {
         state = .starting; stopped = false
-        if !(await serverUp()) {
-            guard let dir = projectDir() else { return fail("Shadow Studio can't find its folder. Rebuild the app with “Build Mac App.command”.") }
+        guard let dir = projectDir() else { return fail("Shadow Studio can't find its folder. Rebuild the app with “Build Mac App.command”.") }
+        guard let source = try? Data(contentsOf: dir.appendingPathComponent("app.py")) else { return fail("Shadow Studio can't read its engine. Rebuild the app with “Build Mac App.command”.") }
+        var signature = Data(dir.resolvingSymlinksInPath().path.utf8); signature.append(0); signature.append(source)
+        let expected = SHA256.hash(data: signature).map { String(format: "%02x", $0) }.joined()
+        let running: Bool
+        do { running = try await serverUp(expected: expected) } catch { return fail(error.localizedDescription) }
+        if !running {
             guard FileManager.default.isExecutableFile(atPath: dir.appendingPathComponent(".venv/bin/python").path) else { return fail("First-time setup hasn't been done yet. Open “Start Shadow Studio.command” once, then open this app again.") }
             guard ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return fail("FFmpeg is needed to read audio and video files. Install it with Homebrew: brew install ffmpeg") }
             let p = Process()
@@ -83,7 +96,8 @@ final class API {
             do { try p.run() } catch { return fail("Shadow Studio couldn't start its local server.") }
             process = p
             var waited = 0.0
-            while !(await serverUp()) {
+            while true {
+                do { if try await serverUp(expected: expected) { break } } catch { return fail(error.localizedDescription) }
                 if stopped { return fail("The local server stopped while starting. Details are in ~/Library/Logs/Shadow Studio.log") }
                 if waited > 120 { return fail("The local server is taking too long to start. Details are in ~/Library/Logs/Shadow Studio.log") }
                 try? await Task.sleep(nanoseconds: 250_000_000); waited += 0.25
