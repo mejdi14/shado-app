@@ -148,7 +148,7 @@ enum Mode: String, CaseIterable {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15_000_000)
                 guard !Task.isCancelled, let ph = phrase else { return }
-                if p.currentTime >= ph.end - 0.015 || !p.isPlaying {
+                if p.currentTime >= ph.end || !p.isPlaying {
                     if looping && !playOnce && !recording { p.currentTime = ph.start; p.play() }
                     else { let done = playbackDone; stopPlayback(); position = ph.end - ph.start; done?(); return }
                 }
