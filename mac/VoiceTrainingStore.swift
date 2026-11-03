@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import CryptoKit
 
 struct TrainingFrame { let time: Double; let energy: Double; let pitch: Double? }
 struct TrainingFeedback { let title: String; let detail: String; let good: Bool; let usable: Bool }
@@ -57,11 +58,8 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
     var player: AVAudioPlayer?
     var timer: Task<Void, Never>?
     var generation = UUID()
-    var speech = AVSpeechSynthesizer()
-    var speechSamples: [Float] = []
-    var speechRate = 22050.0
-    var speechContinuation: CheckedContinuation<([Float], Double), Error>?
-    var speechTimeout: Task<Void, Never>?
+    var speechRequest: Progress?
+    nonisolated static let speechQueue = DispatchQueue(label: "local.shadowstudio.elevenlabs")
     var rememberedLevels: [VoiceTechnique: Int] = [:]
 
     init(api: API) { self.api = api; super.init() }
@@ -104,12 +102,9 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
 
     func stopPlayback() {
         generation = UUID()
+        speechRequest?.cancel(); speechRequest = nil
         timer?.cancel(); timer = nil
         player?.stop(); player = nil
-        speech.stopSpeaking(at: .immediate)
-        speechTimeout?.cancel(); speechTimeout = nil
-        let continuation = speechContinuation; speechContinuation = nil
-        continuation?.resume(throwing: CancellationError())
         playing = false; playingTake = false; rendering = false; playhead = 0
         if let url = exampleURL { try? FileManager.default.removeItem(at: url) }; exampleURL = nil
     }
@@ -199,37 +194,67 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
     }
 
     func renderSpeech(_ text: String, rate: Float) async throws -> ([Float], Double) {
-        guard let voice = AVSpeechSynthesisVoice(language: "en-US") else { throw AppError(message: "An English Mac voice is needed. Add one in System Settings → Accessibility → Spoken Content.") }
-        speechSamples = []; speech = AVSpeechSynthesizer()
-        let utterance = AVSpeechUtterance(string: text); utterance.voice = voice; utterance.rate = rate
-        let token = generation
+        guard let root = ServerManager.shared.projectDir() else { throw AppError(message: "Shadow Studio couldn't find its folder. Rebuild the Mac app.") }
+        let cache = root.appendingPathComponent("data/voice-training-audio", isDirectory: true)
+        let request = Progress(totalUnitCount: 1); speechRequest = request
         return try await withCheckedThrowingContinuation { continuation in
-            speechContinuation = continuation
-            speechTimeout = Task {
-                try? await Task.sleep(nanoseconds: 20_000_000_000)
-                guard !Task.isCancelled, generation == token, let pending = speechContinuation else { return }
-                speechContinuation = nil; speech.stopSpeaking(at: .immediate)
-                pending.resume(throwing: AppError(message: "The Mac voice didn’t produce an example. Check your installed English voices and try again."))
-            }
-            speech.write(utterance) { [weak self] buffer in
-                guard let pcm = buffer as? AVAudioPCMBuffer else { return }
-                let done = pcm.frameLength == 0, sr = pcm.format.sampleRate
-                let copy: [Float]
-                if let channel = pcm.floatChannelData?[0] { copy = Array(UnsafeBufferPointer(start: channel, count: Int(pcm.frameLength))) }
-                else if let channel = pcm.int16ChannelData?[0] { copy = UnsafeBufferPointer(start: channel, count: Int(pcm.frameLength)).map { Float($0) / 32768 } }
-                else { copy = [] }
-                DispatchQueue.main.async {
-                    guard let self, self.generation == token, self.speechContinuation != nil else { return }
-                    if !copy.isEmpty { self.speechSamples.append(contentsOf: copy); self.speechRate = sr }
-                    if done {
-                        self.speechTimeout?.cancel()
-                        let pending = self.speechContinuation; self.speechContinuation = nil
-                        if self.speechSamples.isEmpty { pending?.resume(throwing: AppError(message: "The Mac voice returned no audio. Choose an installed English voice and try again.")) }
-                        else { pending?.resume(returning: (self.speechSamples, self.speechRate)) }
-                    }
+            Self.speechQueue.async {
+                do {
+                    guard !request.isCancelled else { throw CancellationError() }
+                    continuation.resume(returning: try Self.elevenLabsSpeech(text, rate: rate, cache: cache))
                 }
+                catch { continuation.resume(throwing: error) }
             }
         }
+    }
+
+    nonisolated static func elevenLabsSpeech(_ text: String, rate: Float, cache: URL) throws -> ([Float], Double) {
+        let voice = "hpp4J3VqNfWAUOO0d1Us", model = "eleven_multilingual_v2"
+        let speed = min(1.2, max(0.7, Double(rate) / 0.45))
+        let settings = try JSONSerialization.data(withJSONObject: ["stability": 0.5, "similarity_boost": 0.75, "speed": speed])
+        let key = SHA256.hash(data: Data("v1|\(voice)|\(model)|\(speed)|\(text)".utf8)).map { String(format: "%02x", $0) }.joined()
+        let target = cache.appendingPathComponent(key + ".pcm")
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: target.path) {
+            guard let executable = ["/opt/homebrew/bin/elevenlabs", "/usr/local/bin/elevenlabs"].first(where: { fm.isExecutableFile(atPath: $0) }) else {
+                throw AppError(message: "Install the ElevenLabs CLI with Homebrew, then run elevenlabs auth login in Terminal.")
+            }
+            try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+            let temporary = cache.appendingPathComponent(UUID().uuidString + ".pcm")
+            defer { try? fm.removeItem(at: temporary) }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = ["text-to-speech", "convert", "--voice-id", voice, "--model-id", model,
+                                 "--text", text, "--voice-settings", String(decoding: settings, as: UTF8.self),
+                                 "--output-format", "pcm_22050", "--output", temporary.path, "--no-retry", "--quiet"]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run()
+            let deadline = Date().addingTimeInterval(90)
+            while process.isRunning {
+                if Date() > deadline {
+                    process.terminate()
+                    throw AppError(message: "ElevenLabs took too long. Check your connection before retrying; the request may have used credits.")
+                }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            guard process.terminationStatus == 0 else {
+                throw AppError(message: "ElevenLabs couldn't generate this example. Run elevenlabs auth login in Terminal, check your credits and connection, then try again.")
+            }
+            let size = (try fm.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.intValue ?? 0
+            guard size > 0, size <= 22050 * 2 * 60, size % 2 == 0 else {
+                throw AppError(message: "ElevenLabs returned an unreadable example. Please try again.")
+            }
+            try fm.moveItem(at: temporary, to: target)
+        }
+        let data = try Data(contentsOf: target)
+        guard !data.isEmpty, data.count % 2 == 0 else { throw AppError(message: "The saved example couldn't be read. Ask for help restoring the saved audio before regenerating it.") }
+        let samples = stride(from: 0, to: data.count, by: 2).map { i -> Float in
+            let bits = UInt16(data[i]) | (UInt16(data[i + 1]) << 8)
+            return Float(Int16(bitPattern: bits)) / 32768
+        }
+        return (samples, 22050)
     }
 
     func makeTone(_ ex: VoiceExercise, _ skill: VoiceTechnique, _ pattern: VoicePattern, _ sr: Double) -> [Float] {

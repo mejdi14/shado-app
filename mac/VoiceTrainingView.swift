@@ -135,7 +135,7 @@ struct VoiceTrainingView: View {
             }.padding(22)
             Divider()
             VStack(alignment: .leading, spacing: 16) {
-                sectionLabel("01", "Hear it", "Listen as often as you like.")
+                sectionLabel("01", "Hear it", t.exercise.isTone ? "Listen as often as you like." : "First play uses ElevenLabs credits; saved examples replay offline.")
                 HStack(spacing: 9) {
                     Button { Task { await t.playExample() } } label: {
                         Label(t.rendering ? "Preparing…" : t.playing ? "Stop example" : "Hear target", systemImage: t.playing || t.rendering ? "stop.fill" : "play.fill")
@@ -145,7 +145,7 @@ struct VoiceTrainingView: View {
                             .buttonStyle(PillStyle()).disabled(t.locked || t.rendering || t.playing)
                     }
                 }
-                Text(t.exercise.isTone ? "Synthesized tone guide · imitate the movement with your voice" : "Built-in Mac voice · a simple listening guide")
+                Text(t.exercise.isTone ? "Synthesized tone guide · imitate the movement with your voice" : "ElevenLabs · Bella · American English · saved after first generation")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }.padding(22)
             Divider().padding(.horizontal, 22)
