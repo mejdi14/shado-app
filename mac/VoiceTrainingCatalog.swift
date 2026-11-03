@@ -113,8 +113,6 @@ struct VoiceExercise: Identifiable {
     func key(_ technique: VoiceTechnique) -> String { technique.rawValue + "." + id }
 }
 
-struct TrainingProgress: Codable { var completed: [String] }
-
 enum VoiceTrainingCatalog {
     static let exercises: [VoiceTechnique: [VoiceExercise]] = [
         .pitch: [

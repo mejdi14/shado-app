@@ -12,6 +12,7 @@ enum Mode: String, CaseIterable {
 @MainActor final class Store: NSObject, ObservableObject, AVAudioPlayerDelegate {
     let api: API
     @Published var showLibrary = false
+    @Published var showTraining = false
     @Published var library: [LibraryItem] = []
     @Published var lesson: Lesson?
     @Published var index = 0
@@ -126,8 +127,8 @@ enum Mode: String, CaseIterable {
         mode = m; concealed = m == .recall
     }
 
-    func openLibrary() async { await guarded { try await refreshLibrary(); showLibrary = true } }
-    func openLesson(_ id: String) async { await guarded { try await loadLesson(id); showLibrary = false } }
+    func openLibrary() async { await guarded { try await refreshLibrary(); stopPlayback(); showTraining = false; showLibrary = true } }
+    func openLesson(_ id: String) async { await guarded { try await loadLesson(id); showTraining = false; showLibrary = false } }
 
     // MARK: Playback
 
@@ -314,7 +315,7 @@ enum Mode: String, CaseIterable {
             if let f = importFile { j = try await uploadFile(f) }
             else { j = try await api.get(JobStart.self, "/api/import", method: "POST", json: ["url": url]) }
             let lid = try await waitJob(j.jobId, "Finding your phrases")
-            try await loadLesson(lid); showLibrary = false
+            try await loadLesson(lid); showTraining = false; showLibrary = false
             importURL = ""; importFile = nil
             show("Your practice session is ready. Start by listening to the first phrase.")
         } catch { importError = error.localizedDescription; showImport = true }

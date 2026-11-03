@@ -141,6 +141,13 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
             }
             guard generation == token else { return }
             var sound = samples
+            if !ex.isTone {
+                let peak = sound.reduce(Float(0)) { max($0, abs($1)) }, gate = max(0.002, peak * 0.03)
+                if let a = sound.firstIndex(where: { abs($0) > gate }), let b = sound.lastIndex(where: { abs($0) > gate }) {
+                    let padding = Int(sr * 0.02)
+                    sound = Array(sound[max(0, a - padding)...min(sound.count - 1, b + padding)])
+                }
+            }
             if skill == .stress || (skill == .energy && !ex.units.isEmpty) {
                 let strong = contrast ? ex.contrastStrong : ex.strong
                 for i in sound.indices {
@@ -207,10 +214,13 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
             speech.write(utterance) { [weak self] buffer in
                 guard let pcm = buffer as? AVAudioPCMBuffer else { return }
                 let done = pcm.frameLength == 0, sr = pcm.format.sampleRate
-                let copy = pcm.floatChannelData.map { Array(UnsafeBufferPointer(start: $0[0], count: Int(pcm.frameLength))) } ?? []
+                let copy: [Float]
+                if let channel = pcm.floatChannelData?[0] { copy = Array(UnsafeBufferPointer(start: channel, count: Int(pcm.frameLength))) }
+                else if let channel = pcm.int16ChannelData?[0] { copy = UnsafeBufferPointer(start: channel, count: Int(pcm.frameLength)).map { Float($0) / 32768 } }
+                else { copy = [] }
                 DispatchQueue.main.async {
                     guard let self, self.generation == token, self.speechContinuation != nil else { return }
-                    self.speechSamples.append(contentsOf: copy); self.speechRate = sr
+                    if !copy.isEmpty { self.speechSamples.append(contentsOf: copy); self.speechRate = sr }
                     if done {
                         self.speechTimeout?.cancel()
                         let pending = self.speechContinuation; self.speechContinuation = nil

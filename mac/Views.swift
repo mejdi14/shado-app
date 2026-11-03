@@ -187,19 +187,21 @@ struct StepCard<Content: View>: View {
 
 struct Sidebar: View {
     @EnvironmentObject var s: Store
+    @EnvironmentObject var training: VoiceTrainingStore
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 9) { Orb(seed: "shadow studio", size: 22); Text("Shadow Studio").font(.system(size: 15, weight: .semibold)).tracking(-0.2) }.padding(.horizontal, 8).padding(.bottom, 18)
-            Button { s.stopPlayback(); s.showImport = true } label: { Label("New session", systemImage: "plus").frame(maxWidth: .infinity) }.buttonStyle(PillStyle(primary: true)).disabled(s.locked).padding(.bottom, 16)
-            nav("Home", "square.grid.2x2", active: s.showLibrary) { Task { await s.openLibrary() } }
-            nav("Practice", "waveform", active: !s.showLibrary) { s.showLibrary = false }
+            Button { s.stopPlayback(); training.stopPlayback(); s.showImport = true } label: { Label("New session", systemImage: "plus").frame(maxWidth: .infinity) }.buttonStyle(PillStyle(primary: true)).disabled(s.locked).padding(.bottom, 16)
+            nav("Home", "square.grid.2x2", active: s.showLibrary && !s.showTraining) { Task { await s.openLibrary() } }
+            nav("Practice", "waveform", active: !s.showLibrary && !s.showTraining) { s.showTraining = false; s.showLibrary = false }
+            nav("Voice Training", "waveform.path", active: s.showTraining) { s.stopPlayback(); s.showTraining = true }
             if !s.library.isEmpty {
                 Text("Sessions").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 20).padding(.bottom, 4)
                 ScrollView {
                     VStack(spacing: 1) {
                         ForEach(s.library) { l in
                             Button { Task { await s.openLesson(l.id) } } label: { HStack(spacing: 9) { Orb(seed: l.id, size: 16); Text(l.title).lineLimit(1); Spacer(minLength: 0) } }
-                                .buttonStyle(RowStyle(active: !s.showLibrary && s.lesson?.id == l.id)).disabled(s.locked)
+                                .buttonStyle(RowStyle(active: !s.showLibrary && !s.showTraining && s.lesson?.id == l.id)).disabled(s.locked)
                         }
                     }
                 }

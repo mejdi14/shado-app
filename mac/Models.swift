@@ -15,6 +15,7 @@ struct Job: Codable { let state: String; let message: String?; let lessonId: Str
 struct Busy { var title: String; var message: String }
 struct Track: Codable { let energy: [Double]; let pitch: [Double?]; let speed: Double? }
 struct VoiceData: Codable { let hop: Double; let source: Track; let take: Track? }
+struct TrainingProgress: Codable { var completed: [String] }
 
 func fmt(_ n: Double) -> String { String(format: "%02d:%02d", Int(n) / 60, Int(n) % 60) }
 

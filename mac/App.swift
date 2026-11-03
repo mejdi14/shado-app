@@ -39,13 +39,21 @@ struct RootView: View {
 
 struct StudioHost: View {
     @StateObject var store: Store
-    init(api: API) { _store = StateObject(wrappedValue: Store(api: api)) }
+    @StateObject var training: VoiceTrainingStore
+    init(api: API) {
+        _store = StateObject(wrappedValue: Store(api: api))
+        _training = StateObject(wrappedValue: VoiceTrainingStore(api: api))
+    }
     var body: some View {
         HStack(spacing: 0) {
-            Sidebar().frame(width: 228)
+            Sidebar().frame(width: 228).disabled(training.locked || training.saving)
             Rectangle().fill(Color.line).frame(width: 1).ignoresSafeArea()
             ZStack {
-                Group { if store.showLibrary { ScrollView { LibraryView() } } else { StudioView() } }
+                Group {
+                    if store.showTraining { VoiceTrainingView() }
+                    else if store.showLibrary { ScrollView { LibraryView() } }
+                    else { StudioView() }
+                }
                     .disabled(store.busy != nil)
                 if let b = store.busy { BusyOverlay(busy: b) }
             }
@@ -56,6 +64,7 @@ struct StudioHost: View {
         }
         .font(.system(size: 13))
         .environmentObject(store)
+        .environmentObject(training)
         .sheet(isPresented: $store.showImport) { ImportSheet().environmentObject(store) }
         .sheet(isPresented: $store.showEdit) { EditSheet().environmentObject(store) }
         .alert("Remove this session?", isPresented: $store.showDelete) {

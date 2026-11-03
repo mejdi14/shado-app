@@ -24,6 +24,16 @@ The local speech model and dependencies are already installed in this folder. Ke
 
 A built-in Mac voice sample is included to try the workflow. It is labelled as a sample, not a real YouTuber.
 
+## Voice Training (Mac app)
+
+Choose **Voice Training** in the Mac sidebar to practise one voice skill before shadowing. This is a separate screen with horizontally scrollable tabs for **Pitch, Intonation, Stress, Rhythm, Pace, Pauses, Energy, Articulation, and Connected Speech**. Each tab starts with simple drills and moves toward short phrases. Every level follows **Hear → See → Try → Feedback → Try Again**; you can open any technique or level at any time.
+
+Examples use synthesized tones for isolated pitch, energy, and rhythm patterns, and a built-in English Mac voice for speech. Pitch charts compare movement around your own comfortable range, rather than matching another voice’s natural pitch. Rhythm pulses follow the example or your recording timer. Pace drills ask you to hear the target first, then compare its time with your speech duration; leading and trailing silence is trimmed from your take. Pauses appear as phrase groups and timeline dividers. Energy guides use relative strength, without decibel targets or maximum-volume training.
+
+Choose **Record your voice**, then **Stop recording**, to see feedback and replay your take. Short recordings stop automatically after 6–14 seconds, depending on the exercise. Pitch, energy, emphasis, rhythm, and pause feedback are local practice estimates. Stress and rhythm use approximate time groups and energy, not recognized syllables; pause detection can also mistake quiet sounds for gaps. Pace feedback compares overall duration; replay to check whether the pace stays steady throughout. Articulation and connected speech use a sound-activity trace and guided listening, without phoneme grading: replay your take, then choose **Sounds clear · mark practised** when you’re satisfied.
+
+Progress is separate for each technique, with no overall voice score. A matching estimated pattern marks a level practised; you can still retry it as often as you like. Progress is saved by the local engine in **data/voice-training.json**. Training recordings and generated examples are temporary: retrying, changing levels, or leaving the screen removes them. They are not added to shadowing sessions. No new dependencies or online speech services are needed. To use this screen after updating, quit the Mac app, stop any engine started in Terminal, run **Build Mac App.command**, then reopen the app.
+
 ## How it sounds
 
 Under each phrase, a single line shows the speaker's voice going up and down, with each word placed where it is spoken. Bold words are the loudest ones, which are often, but not always, the stressed words. Soft bands marked "pause" show quiet gaps of 0.15 seconds or more. While audio plays, the word being spoken is highlighted.
@@ -71,7 +81,7 @@ The boundary changes follow the principle described in [stable-ts gap adjustment
 
 ## Verification on this Mac
 
-The latest sentence-boundary and engine startup changes have had Python syntax checking only. Their playback accuracy and Mac startup behavior have not been tested; the checks below describe the earlier version.
+Voice Training has had Python and Swift syntax checking only. It has not been built, launched, or tested with a microphone; check example playback, all nine tabs, live recording, feedback, retry, and saved per-technique progress after rebuilding. The latest sentence-boundary and engine startup changes have had Python syntax checking only. Their playback accuracy and Mac startup behavior have not been tested; the checks below describe the earlier version.
 
 Verified local upload, audio conversion, English transcription, automatic phrase boundaries, recording analysis and replay, silence rejection, persistence, phrase correction, and comparison at slower playback speeds. Browser checks covered phrase navigation, hidden-text recall, and the import form. Microphone capture still requires your browser permission when you first use it.
 
