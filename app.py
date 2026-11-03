@@ -263,6 +263,34 @@ def library():
         except (ValueError,KeyError): pass
     return sorted(lessons,key=lambda x:x['created'],reverse=True)
 
+def training_progress():
+    path=DATA/'voice-training.json'
+    if not path.exists(): return {'completed':[]}
+    try:
+        body=json.loads(path.read_text())
+        if not isinstance(body,dict) or not isinstance(body.get('completed'),list): raise ValueError()
+        return {'completed':[x for x in body['completed'] if isinstance(x,str) and re.fullmatch(r'[a-z-]+\.[a-z0-9-]+',x)]}
+    except (ValueError,OSError): raise HTTPException(500,'Voice Training progress could not be read. Your saved file has been kept.')
+
+@app.get('/api/voice-training/progress')
+def get_training_progress(): return training_progress()
+
+@app.post('/api/voice-training/progress')
+async def complete_training_exercise(request:Request):
+    if len(raw:=await request.body())>1024: raise HTTPException(413,'Progress update is too large.')
+    try: exercise=json.loads(raw).get('exercise')
+    except (ValueError,AttributeError): raise HTTPException(400,'Choose a Voice Training exercise.')
+    if not isinstance(exercise,str) or len(exercise)>80 or not re.fullmatch(r'[a-z-]+\.[a-z0-9-]+',exercise): raise HTTPException(400,'Choose a Voice Training exercise.')
+    with file_lock:
+        progress=training_progress()
+        if exercise not in progress['completed']:
+            if len(progress['completed'])>=1000: raise HTTPException(400,'The saved practice list is full.')
+            progress['completed'].append(exercise)
+            path=DATA/'voice-training.json'; temp=path.with_suffix('.tmp')
+            try: temp.write_text(json.dumps(progress,indent=2)); temp.replace(path)
+            except OSError: raise HTTPException(500,'Progress could not be saved. Please try again.')
+        return progress
+
 @app.get('/api/lesson/{lid}')
 def lesson(lid:str): return read_lesson(lid)
 
