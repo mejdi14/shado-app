@@ -3,7 +3,44 @@ import SwiftUI
 // MARK: Mouth guide: a glowing cutaway head that shows how each sound of the example is usually made.
 // The look follows Chimera by Jameson Hodge (github.com/jamesondh/chimera-vocal-synth, MIT); the drawing and sound table here are simplified and our own.
 
-// MARK: Spelling to sounds (Apple phoneme symbols). macOS no longer returns phonemes from NSSpeechSynthesizer, so these are rough English spelling rules.
+// MARK: Word to sounds (Apple phoneme symbols): the CMU Pronouncing Dictionary first (mac/cmudict.dict, copied into the app by Build Mac App.command; licence in mac/CMUDICT-LICENSE.txt), then rough spelling rules for words it doesn't list
+
+enum CMUDict {
+    static let entries: [String: String] = {
+        guard let url = Bundle.main.url(forResource: "cmudict", withExtension: "dict"), let data = try? Data(contentsOf: url) else { return [:] }
+        var out: [String: String] = [:]
+        out.reserveCapacity(130_000)
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            guard let sp = line.firstIndex(of: " ") else { continue }
+            let word = line[..<sp]
+            if word.hasSuffix(")") { continue }
+            out[String(word)] = (line[line.index(after: sp)...].split(separator: "#").first ?? "").trimmingCharacters(in: .whitespaces)
+        }
+        return out
+    }()
+    static let arpa: [String: [String]] = [
+        "AA": ["AA"], "AE": ["AE"], "AO": ["AO"], "AW": ["AW"], "AY": ["AY"], "EH": ["EH"], "ER": ["AX", "r"], "EY": ["EY"], "IH": ["IH"], "IY": ["IY"], "OW": ["OW"], "OY": ["OY"], "UH": ["UH"], "UW": ["UW"],
+        "B": ["b"], "CH": ["C"], "D": ["d"], "DH": ["D"], "F": ["f"], "G": ["g"], "HH": ["h"], "JH": ["J"], "K": ["k"], "L": ["l"], "M": ["m"], "N": ["n"], "NG": ["N"], "P": ["p"],
+        "R": ["r"], "S": ["s"], "SH": ["S"], "T": ["t"], "TH": ["T"], "V": ["v"], "W": ["w"], "Y": ["y"], "Z": ["z"], "ZH": ["Z"],
+    ]
+    static func sounds(_ word: String) -> [String]? {
+        guard let e = entries[word] else { return nil }
+        return e.split(separator: " ").flatMap { ph -> [String] in
+            let base = String(ph.filter { $0.isLetter })
+            if base == "AH" { return [ph.hasSuffix("0") ? "AX" : "UX"] }
+            if base == "IH" && ph.hasSuffix("0") { return ["IX"] }
+            return arpa[base] ?? []
+        }
+    }
+}
+
+func wordSounds(_ raw: String) -> [String] {
+    let w = raw.lowercased().replacingOccurrences(of: "’", with: "'").filter { $0.isLetter || $0 == "'" || $0 == "-" }
+    return w.split(separator: "-").flatMap { part -> [String] in
+        let bare = part.trimmingCharacters(in: CharacterSet(charactersIn: "'"))
+        return CMUDict.sounds(String(part)) ?? CMUDict.sounds(bare) ?? spelledSounds(bare)
+    }
+}
 
 private let spelledExceptions: [String: [String]] = [
     "the": ["D", "AX"], "a": ["AX"], "an": ["AE", "n"], "of": ["AX", "v"], "to": ["t", "UW"],
@@ -201,7 +238,7 @@ struct MouthTimeline {
         }
         var lastEnd: Double? = nil
         for (start, end, raw) in words {
-            let sounds = spelledSounds(raw).filter { MouthSounds.table[$0] != nil }
+            let sounds = wordSounds(raw).filter { MouthSounds.table[$0] != nil }
             guard !sounds.isEmpty, end > start else { continue }
             if let le = lastEnd { if start - le > 0.25 { add(MouthSounds.rest, le + 0.1); add(MouthSounds.rest, start - 0.1) } }
             else { add(MouthSounds.rest, start - 0.15) }
@@ -419,10 +456,14 @@ struct MouthGuide: View {
                     .background(RoundedRectangle(cornerRadius: 12).fill(Color(red: 0.012, green: 0.02, blue: 0.04)))
                     .overlay(RoundedRectangle(cornerRadius: 12).stroke(MouthHead.skull.opacity(0.28)))
                 }
-                muted("A rough guide built from each word’s spelling and timed to the transcript. It doesn’t track the speaker’s real mouth, so let your ears decide.").fixedSize(horizontal: false, vertical: true)
+                muted("A rough guide from dictionary pronunciations (American English), timed to the transcript. It doesn’t track the speaker’s real mouth, so let your ears decide.").fixedSize(horizontal: false, vertical: true)
             }
         }
-        .task(id: lineKey) { line = MouthTimeline(phrase) }
+        .task(id: lineKey) {
+            let ph = phrase
+            let next = await Task.detached(priority: .userInitiated) { MouthTimeline(ph) }.value
+            if !Task.isCancelled { line = next }
+        }
     }
 
     func info(_ seg: MouthSeg?, _ pose: MouthPose) -> some View {

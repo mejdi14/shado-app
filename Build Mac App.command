@@ -6,8 +6,9 @@ if ! command -v swiftc >/dev/null; then
 fi
 APP="Shadow Studio.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -swift-version 5 -parse-as-library -target "$(uname -m)-apple-macos13.0" mac/*.swift -o "$APP/Contents/MacOS/Shadow Studio" || { echo 'Build failed.'; read; exit 1; }
+cp mac/cmudict.dict mac/CMUDICT-LICENSE.txt "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
