@@ -152,6 +152,7 @@ struct VoiceTrainingView: View {
             VStack(alignment: .leading, spacing: 15) {
                 sectionLabel("02", "See it", visualCaption)
                 TrainingVisualization().environmentObject(t)
+                VoiceHeadGuide().environmentObject(t)
             }.padding(22)
             Divider().padding(.horizontal, 22)
             VStack(alignment: .leading, spacing: 16) {

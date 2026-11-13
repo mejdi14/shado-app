@@ -40,6 +40,7 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
     @Published var feedback: TrainingFeedback?
     @Published var rendering = false
     @Published var playing = false
+    @Published var exampleContrast = false
     @Published var playingTake = false
     @Published var playhead = 0.0
     @Published var saving = false
@@ -124,7 +125,7 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
     func playExample(contrast: Bool = false) async {
         guard !locked else { return }
         if playing || rendering { stopPlayback(); return }
-        stopPlayback(); error = nil; rendering = true
+        stopPlayback(); error = nil; rendering = true; exampleContrast = contrast
         let token = generation, ex = exercise, skill = technique
         do {
             let samples: [Float], sr: Double
