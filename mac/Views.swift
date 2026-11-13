@@ -393,6 +393,7 @@ struct PracticePanel: View {
                 PracticeSentence(phrase: phrase)
             }
             controls
+            MouthGuide(phrase: phrase)
             if phrase.latest != nil { comparison }
             Rectangle().fill(Color.line).frame(height: 1)
             if phrase.latest != nil { NextStepView(phrase: phrase) }
