@@ -11,7 +11,7 @@ if [[ ! -x .venv/bin/python ]]; then
   PYTHON="$(command -v python3.12 || command -v python3.13 || command -v python3)"
   "$PYTHON" -m venv .venv || exit 1
 fi
-if ! .venv/bin/python -c 'import fastapi, uvicorn, faster_whisper, scipy, multipart, yt_dlp' 2>/dev/null; then
+if ! .venv/bin/python -c 'import fastapi, uvicorn, faster_whisper, scipy, multipart, yt_dlp, pypdf' 2>/dev/null; then
   .venv/bin/python -m pip install -r requirements.txt || { echo 'Setup needs an internet connection. Please try again.'; read; exit 1; }
 fi
 if ! command -v ffmpeg >/dev/null; then

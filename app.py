@@ -4,7 +4,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'models'))
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-import json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib
+import json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib, base64, random
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
 import numpy as np
@@ -243,12 +244,12 @@ def job_start(action):
     executor.submit(work)
     return {'jobId':jid}
 
-def finish_import(lid, title, source, jid):
+def finish_import(lid, title, source, jid, segments=None):
     path=folder(lid)
     audio=load_audio(path/'audio.wav')
     if len(audio)>16000*1800: raise ValueError('Choose a video or file under 30 minutes for focused practice.')
-    jobs[jid]['message']='Finding phrases… The first import downloads a speech model (about 150 MB).'
-    phrases=make_phrases(transcribe(path/'audio.wav'), audio)
+    jobs[jid]['message']='Finding phrases…'+('' if segments else ' The first import downloads a speech model (about 150 MB).')
+    phrases=make_phrases(segments or transcribe(path/'audio.wav'), audio)
     if not phrases: raise ValueError('No clear English speech found. Try a clip with a single speaker and little music.')
     lesson={'id':lid,'title':title[:160],'source':source,'created':time.time(),'duration':round(len(audio)/16000,2),'phrases':phrases,'sample':False}
     save_lesson(lesson)
@@ -355,6 +356,89 @@ async def upload(file:UploadFile=File(...), title:str=Form('')):
         try:
             convert(source,path/'audio.wav',duration=1801)
             return finish_import(lid,title or Path(file.filename or 'My practice').stem,'Uploaded file',jid)
+        finally: source.unlink(missing_ok=True)
+    return job_start(action)
+
+PDF_CHARS=20000
+ELEVEN_FAILED='ElevenLabs could not create the voice. Check your connection, that you are signed in (run “elevenlabs auth login” in Terminal) and that you have credits left, then try again.'
+
+def text_cut(text, n):
+    if len(text)<=n: return len(text)
+    ends=[m.end() for m in re.finditer(r'[.!?]["\')”’]*\s',text[:n])]
+    return ends[-1] if ends and ends[-1]>n//2 else (text.rfind(' ',0,n)+1 or n)
+
+def pdf_text(source):
+    try: from pypdf import PdfReader
+    except ImportError: raise ValueError('PDF import needs one more package. Quit Shadow Studio, open “Start Shadow Studio.command” once to install it, then try again.')
+    try:
+        pages=[]; size=0
+        for page in PdfReader(str(source)).pages:
+            pages.append(page.extract_text() or ''); size+=len(pages[-1])
+            if size>PDF_CHARS*2: break
+    except Exception: raise ValueError('This PDF could not be read. If it is password-protected, save an unlocked copy and try again.')
+    raw=re.sub(r'(?m)^[ \t]*\d+[ \t]*\n?','',re.sub(r'[\x00-\x08\x0b-\x1f­]','','\n'.join(pages)))
+    blocks=[re.sub(r'\s+',' ',re.sub(r'(?<=[A-Za-z])-\n(?=[a-z])','',b)).strip() for b in re.split(r'\n\s*\n',raw)]
+    # A short block with no closing punctuation is most likely a heading; end it so it is not read into the next sentence.
+    text=' '.join(b+'.' if len(b)<80 and b[-1].isalnum() else b for b in blocks if b)
+    if len(re.findall(r'[A-Za-z]{2,}',text))<5: raise ValueError('No readable text was found in this PDF. Scanned pages are pictures of text; choose a PDF whose text you can select and copy.')
+    return text[:text_cut(text,PDF_CHARS)].strip()
+
+def eleven(args, body=None):
+    cli=shutil.which('elevenlabs') or '/opt/homebrew/bin/elevenlabs'
+    if not Path(cli).exists(): raise ValueError('PDF import needs the ElevenLabs command-line tool. Install it, run “elevenlabs auth login” in Terminal, then try again.')
+    try:
+        result=subprocess.run([cli,*args,'--format','json','--no-extract'],input=body,capture_output=True,text=True,timeout=300)
+        if result.returncode: raise ValueError()
+        out=json.loads(result.stdout)
+        if not isinstance(out,dict): raise ValueError()
+        return out
+    except (ValueError,OSError,subprocess.SubprocessError): raise ValueError(ELEVEN_FAILED)
+
+def timed_words(alignment, offset):
+    found=[]; cur=None
+    for ch,s,e in zip(alignment['characters'],alignment['character_start_times_seconds'],alignment['character_end_times_seconds']):
+        if not ch.strip(): cur=None
+        elif cur: cur.word+=ch; cur.end=offset+e
+        else: cur=SimpleNamespace(word=' '+ch,start=offset+s,end=offset+e); found.append(cur)
+    return found
+
+@app.post('/api/pdf')
+async def pdf(file:UploadFile=File(...), title:str=Form('')):
+    lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
+    source=path/'upload.pdf'; size=0
+    with source.open('wb') as out:
+        while chunk:=await file.read(1024*1024):
+            size+=len(chunk)
+            if size>150*1024*1024:
+                out.close(); shutil.rmtree(path,ignore_errors=True); raise HTTPException(413,'Choose a file smaller than 150 MB.')
+            out.write(chunk)
+    def action(jid):
+        jobs[jid]['cleanup']=str(path)
+        try:
+            jobs[jid]['message']='Reading the PDF…'
+            text=pdf_text(source); chunks=[]
+            while text: k=text_cut(text,2500); chunks.append(text[:k].strip()); text=text[k:].lstrip()
+            jobs[jid]['message']='Choosing a voice…'
+            voices=[v for v in eleven(['voices','search','--gender','male','--page-size','100']).get('voices') or [] if v.get('voice_id') and (v.get('labels') or {}).get('language','en')=='en']
+            if not voices: raise ValueError('No male English voice was found in your ElevenLabs account. Add one to your voices, then try again.')
+            voice=random.choice(voices); name=str(voice.get('name') or '').split(' - ')[0].strip() or 'a male voice'
+            audio=[]; segments=[]; timed=True; offset=0.
+            for n,chunk in enumerate(chunks):
+                jobs[jid]['message']=f'{name} is reading your PDF… part {n+1} of {len(chunks)}'
+                body={'text':chunk,'model_id':'eleven_multilingual_v2'}
+                if n: body['previous_text']=chunks[n-1][-300:]
+                if n+1<len(chunks): body['next_text']=chunks[n+1][:300]
+                out=eleven(['text-to-speech','convert_with_timestamps','--voice-id',voice['voice_id'],'--json','-'],json.dumps(body))
+                if not out.get('audio_base64'): raise ValueError(ELEVEN_FAILED)
+                part=path/f'part{n}.mp3'; wav=path/f'part{n}.wav'
+                part.write_bytes(base64.b64decode(out['audio_base64'])); convert(part,wav)
+                y=load_audio(wav); part.unlink(); wav.unlink()
+                # ElevenLabs returns when each character is spoken, so phrases keep the PDF's exact wording. Without it, fall back to local transcription.
+                try: segments.append(SimpleNamespace(no_speech_prob=0.,words=timed_words(out['alignment'],offset)))
+                except (KeyError,TypeError): timed=False
+                audio.append(y); offset+=len(y)/16000
+            wavfile.write(path/'audio.wav',16000,(np.clip(np.concatenate(audio),-1,1)*32767).astype(np.int16))
+            return finish_import(lid,title or Path(file.filename or 'My practice').stem,f'PDF, read by {name} (ElevenLabs)',jid,segments if timed else None)
         finally: source.unlink(missing_ok=True)
     return job_start(action)
 

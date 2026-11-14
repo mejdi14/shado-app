@@ -6,3 +6,4 @@ numpy>=2,<3
 scipy>=1.14,<2
 yt-dlp[default]>=2026.10.14
 av>=11,<17
+pypdf>=5,<8
