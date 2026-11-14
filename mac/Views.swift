@@ -25,7 +25,7 @@ extension View {
 
 func muted(_ s: String) -> some View { Text(s).font(.system(size: 12)).foregroundStyle(.secondary) }
 func legendDot(_ c: Color, _ t: String) -> some View { HStack(spacing: 6) { Circle().fill(c).frame(width: 7, height: 7); muted(t) } }
-func sourceLabel(_ source: String, _ sample: Bool) -> String { sample ? "Guided sample · built-in Mac voice" : source.hasPrefix("http") ? "YouTube" : "Your file" }
+func sourceLabel(_ source: String, _ sample: Bool) -> String { sample ? "Guided sample · built-in Mac voice" : source.hasPrefix("http") ? "YouTube" : source.hasPrefix("PDF") ? source : "Your file" }
 func speedLabel(_ v: Double) -> String { v == 1 ? "1×" : String(format: "%g×", v) }
 
 // MARK: Building blocks
@@ -254,7 +254,7 @@ struct LibraryView: View {
             }
             HStack(spacing: 12) {
                 tile("Import from YouTube", "Paste a link to an English video", "play.fill", "youtube") { s.importUpload = false; s.showImport = true }
-                tile("Upload a file", "Audio or video from your Mac", "arrow.up", "upload") { s.importUpload = true; s.showImport = true }
+                tile("Upload a file", "Audio, video or a PDF from your Mac", "arrow.up", "upload") { s.importUpload = true; s.showImport = true }
                 tile("Try the sample", "A short guided example", "sparkles", "sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.disabled(s.sampleId == nil)
             }
             VStack(spacing: 0) {
@@ -324,7 +324,7 @@ struct EmptyStudio: View {
                 Button("Try the sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.buttonStyle(PillStyle()).disabled(s.sampleId == nil)
             }
             HStack(alignment: .top, spacing: 12) {
-                how(1, "Import", "A YouTube link or an audio or video file.")
+                how(1, "Import", "A YouTube link, an audio or video file, or a PDF.")
                 how(2, "Practise", "Listen to a phrase, then record yourself.")
                 how(3, "Compare", "Check your words, rhythm and pitch.")
             }.fixedSize(horizontal: false, vertical: true).frame(maxWidth: 640).padding(.top, 18)
@@ -812,6 +812,7 @@ struct ImportSheet: View {
                         Image(systemName: s.importFile == nil ? "arrow.up.circle" : "doc.fill").font(.system(size: 22, weight: .light)).foregroundStyle(.secondary)
                         Text(s.importFile?.lastPathComponent ?? "Click to choose, or drop a file here").font(.system(size: 13, weight: .medium)).lineLimit(1)
                         muted("MP3, WAV, M4A, MP4, WebM · up to 150 MB · up to 30 minutes")
+                        muted("Or a PDF with selectable English text, read aloud by a random male ElevenLabs voice")
                     }.frame(maxWidth: .infinity).padding(.vertical, 26)
                         .background(RoundedRectangle(cornerRadius: 12).fill(dropping ? Color.selected : Color.subtle))
                         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5])).foregroundStyle(Color.line))
@@ -832,19 +833,19 @@ struct ImportSheet: View {
             }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 2)
-                muted("Processing and recordings stay on your Mac. Importing a link connects to YouTube; the first transcription downloads a speech model.").fixedSize(horizontal: false, vertical: true)
+                muted(s.importUpload && s.importFile?.pathExtension.lowercased() == "pdf" ? "The text of this PDF (the first 20,000 characters) is sent to ElevenLabs to create the voice, using your ElevenLabs account and credits. Your recordings stay on your Mac." : "Processing and recordings stay on your Mac. Importing a link connects to YouTube; the first transcription downloads a speech model.").fixedSize(horizontal: false, vertical: true)
             }
             if !s.importError.isEmpty { Text(s.importError).foregroundStyle(Color.rec).font(.system(size: 12.5)) }
             HStack { Spacer(); Button("Cancel") { s.showImport = false }.buttonStyle(PillStyle()); Button("Create session") { create() }.buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction) }
         }
         .padding(24).frame(width: 520).background(Color.surface)
-        .fileImporter(isPresented: $picking, allowedContentTypes: [.audio, .movie, .audiovisualContent] + ["webm", "mkv", "m4a"].compactMap { UTType(filenameExtension: $0) }) { result in
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.audio, .movie, .audiovisualContent, .pdf] + ["webm", "mkv", "m4a"].compactMap { UTType(filenameExtension: $0) }) { result in
             if case .success(let url) = result { s.importFile = url; s.importURL = ""; s.importError = "" }
         }
     }
     func create() {
         if s.importUpload {
-            if s.importFile == nil { s.importError = "Choose an audio or video file."; return }
+            if s.importFile == nil { s.importError = "Choose an audio, video or PDF file."; return }
             s.importURL = ""
         } else { s.importFile = nil }
         Task { await s.submitImport() }

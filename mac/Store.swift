@@ -334,7 +334,7 @@ enum Mode: String, CaseIterable {
         while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { out.write(chunk) }
         try input.close()
         out.write(Data("\r\n--\(boundary)--\r\n".utf8)); try out.close()
-        return try await api.get(JobStart.self, "/api/upload", method: "POST", contentType: "multipart/form-data; boundary=\(boundary)", file: temp)
+        return try await api.get(JobStart.self, file.pathExtension.lowercased() == "pdf" ? "/api/pdf" : "/api/upload", method: "POST", contentType: "multipart/form-data; boundary=\(boundary)", file: temp)
     }
 
     func savePhrase(text: String, start: Double, end: Double) async -> String? {
