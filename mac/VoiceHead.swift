@@ -120,11 +120,11 @@ enum VH {
     }
 }
 
-// MARK: Pose: jaw opening (0 closed … 1 wide, 0.25 as painted), shifts in painting pixels, larynx height in cm (+ up)
+// MARK: Pose: jaw opening (0 closed … 1 wide, 0.25 as painted), shifts in painting pixels, larynx height in cm (+ up), the dot face's lip gap in painting pixels
 
 struct HeadPose: Equatable {
     var jaw = 0.25, tongue = CGVector.zero, tip = CGVector.zero, lip = CGVector.zero
-    var larynx = 0.0, voice = 0.0, breath = 0.0, nasal = 0.0, semis = 0.0
+    var larynx = 0.0, voice = 0.0, breath = 0.0, nasal = 0.0, semis = 0.0, gap = 0.0
     static let joint = CGPoint(x: 327.7, y: 614.4), bend = 819.0, body0 = CGPoint(x: 495, y: 830), tip0 = CGPoint(x: 660, y: 782), lip0 = CGPoint(x: 748, y: 835)
     var k: Double { 1 - larynx / 7 }
 
@@ -134,8 +134,9 @@ struct HeadPose: Equatable {
         tip = CGVector(dx: a.tipUp * 4 + a.tipFront * 15, dy: -a.tipUp * 55 - a.tipFront * 6)
         lip = CGVector(dx: -a.labio * 12, dy: -a.close * 30 - a.labio * 24)
         voice = a.voice; nasal = a.velum * a.voice
+        gap = max(0, 12 + 88 * a.jaw - 40 * a.close - 30 * a.labio)
     }
-    mutating func ah(_ amount: Double) { jaw = 0.25 + 0.4 * amount; tongue = CGVector(dx: -14 * amount, dy: 20 * amount) }
+    mutating func ah(_ amount: Double) { jaw = 0.25 + 0.4 * amount; tongue = CGVector(dx: -14 * amount, dy: 20 * amount); gap = 70 * amount }
 
     // The throat below the bend stretches or shortens as the larynx moves.
     func stretch(_ p: CGPoint) -> CGPoint { p.y > Self.bend ? CGPoint(x: p.x, y: Self.bend + (p.y - Self.bend) * k) : p }
@@ -252,12 +253,88 @@ final class HeadScene: SKScene {
     }
 }
 
+// MARK: Dot face: the head from outside, in dots, the way Dither Veil by React Bits (reactbits.dev/animations/dither-veil) dithers a picture:
+// its Floyd–Steinberg error diffusion on serpentine rows, tone curve (contrast 1.15, gamma 1.6) and paper colour, rewritten here without its pointer effects.
+// The grey picture is mac/voice-dot-head.png, drawn by mac/make_dot_head.py: one pixel per dot, its outline traced from the painting so both heads line up.
+// To open the mouth, the dots below the mouth line turn about the jaw joint. The turn fades out towards the ear, the throat and the mouth corner,
+// the dots keep their place on the skin, and the gap that opens between the lips stays dark.
+
+final class DotHead {
+    static let cols = 156, rows = 232, cell = 1320.0 / 232, x0 = 40 - (156 * 1320.0 / 232 - 880) / 2, y0 = 70.0
+    static let corner = CGPoint(x: 705, y: 778), along = CGVector(dx: 0.99746, dy: -0.07125), reach = 508.0
+    static let shared = DotHead()
+    let rest: [UInt8]
+    private var gap = -1.0, image: CGImage?
+
+    init?() {
+        let w = Self.cols, h = Self.rows
+        guard let url = Bundle.main.url(forResource: "voice-dot-head", withExtension: "png"),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil), let img = CGImageSourceCreateImageAtIndex(source, 0, nil), img.width == w, img.height == h else { return nil }
+        let space = img.colorSpace.flatMap { $0.model == .monochrome ? $0 : nil } ?? CGColorSpaceCreateDeviceGray()
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: space, bitmapInfo: CGImageAlphaInfo.none.rawValue), let data = ctx.data else { return nil }
+        ctx.interpolationQuality = .none
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let px = data.bindMemory(to: UInt8.self, capacity: w * h)
+        var v = (0..<(w * h)).map { pow(min(1, max(0, (Double(px[$0]) / 255 - 0.5) * 1.15 + 0.5)), 1.6) }
+        var bits = [UInt8](repeating: 0, count: w * h)
+        let kernel: [(Int, Int, Double)] = [(1, 0, 7.0 / 16), (-1, 1, 3.0 / 16), (0, 1, 5.0 / 16), (1, 1, 1.0 / 16)]
+        for y in 0..<h {
+            let dir = y & 1 == 1 ? -1 : 1
+            for i in 0..<w {
+                let x = dir > 0 ? i : w - 1 - i, p = y * w + x, on = v[p] >= 0.5, err = v[p] - (on ? 1 : 0)
+                bits[p] = on ? 1 : 0
+                for (dx, dy, k) in kernel { let nx = x + dx * dir, ny = y + dy; if nx >= 0, nx < w, ny < h { v[ny * w + nx] += err * k } }
+            }
+        }
+        rest = bits
+    }
+
+    // How much of the jaw's turn a point of the resting picture takes: none above the mouth line, all of it at the chin.
+    static func weight(_ p: CGPoint) -> Double {
+        let base = VH.ramp(430, 700, p.x) * (1 - VH.ramp(1120, 1260, p.y))
+        if base == 0 { return 0 }
+        let vx = p.x - corner.x, vy = p.y - corner.y, ahead = vx * along.dx + vy * along.dy, below = vy * along.dx - vx * along.dy
+        if ahead > 0.16 * abs(below) { return below >= 0 ? base * VH.ramp(0, 170, hypot(vx, vy)) : 0 }
+        let a = atan2(below, ahead)
+        return base * VH.ramp(0, 170, hypot(vx, vy)) * (1 - VH.ramp(0.55 * .pi, 1.45 * .pi, a >= 0 ? a : a + 2 * .pi))
+    }
+
+    // The dots with the lips `gap` painting pixels apart. Each dot of the moving area looks up where it came from: a point that turned by
+    // angle × weight about the joint, found by bisection along its arc. Where no such point exists the mouth is open, and the dot stays dark.
+    func image(_ gap: Double) -> CGImage? {
+        let g = min(104, max(0, gap)).rounded()
+        if g == self.gap { return image }
+        self.gap = g
+        let w = Self.cols, h = Self.rows, k = Self.cell, th = g / Self.reach, j = HeadPose.joint
+        var bits = rest
+        if th > 0 {
+            for y in 86..<212 { for x in 69..<w {
+                let q = CGPoint(x: Self.x0 + (Double(x) + 0.5) * k, y: Self.y0 + (Double(y) + 0.5) * k)
+                if Self.weight(q) == 0 { continue }
+                let dx = q.x - j.x, dy = q.y - j.y
+                func back(_ a: Double) -> CGPoint { let s = a - a * a * a / 6, c = 1 - a * a / 2 + a * a * a * a / 24; return CGPoint(x: j.x + dx * c + dy * s, y: j.y - dx * s + dy * c) }
+                var lo = 0.0, hi = th
+                for _ in 0..<10 { let mid = (lo + hi) / 2; if th * Self.weight(back(mid)) > mid { lo = mid } else { hi = mid } }
+                let phi = (lo + hi) / 2, p = back(phi), sx = Int(((p.x - Self.x0) / k).rounded(.down)), sy = Int(((p.y - Self.y0) / k).rounded(.down))
+                let found = abs(th * Self.weight(p) - phi) * hypot(dx, dy) < 0.6 * k && sx >= 0 && sx < w && sy >= 0 && sy < h
+                bits[y * w + x] = found ? rest[sy * w + sx] : 0
+            } }
+        }
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        for i in 0..<(w * h) where bits[i] == 1 { rgba[4 * i] = 244; rgba[4 * i + 1] = 241; rgba[4 * i + 2] = 234; rgba[4 * i + 3] = 255 }
+        image = CGDataProvider(data: Data(rgba) as CFData).flatMap { CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4, space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: $0, decode: nil, shouldInterpolate: false, intent: .defaultIntent) }
+        return image
+    }
+}
+
 // MARK: View
 
 struct VoiceHeadGuide: View {
     @EnvironmentObject var t: VoiceTrainingStore
     @AppStorage("voice-head") private var shown = true
+    @AppStorage("voice-head-inside") private var inside = false
     @State private var scene: HeadScene?
+    var dots: DotHead? { DotHead.shared }
     @State private var missing = false
     @State private var line = MouthTimeline()
     var active: Bool { t.playing || t.playingTake || t.recording }
@@ -269,6 +346,7 @@ struct VoiceHeadGuide: View {
             HStack(spacing: 8) {
                 Label("Voice guide", systemImage: "waveform.circle").font(.system(size: 12, weight: .semibold))
                 Spacer()
+                if shown, dots != nil { Button(inside ? "Dot face" : "Look inside") { inside.toggle() }.buttonStyle(PillStyle(compact: true)).help(inside ? "Cover the head with the dot face" : "Show the painted head in section, with the air, tongue and larynx") }
                 Button(shown ? "Hide" : "Show") { shown.toggle() }.buttonStyle(PillStyle(compact: true)).help(shown ? "Hide the voice guide" : "Show what the voice box, air and mouth are doing")
             }
             if shown {
@@ -280,24 +358,28 @@ struct VoiceHeadGuide: View {
                         let _ = scene?.apply(now.pose)
                         HStack(alignment: .top, spacing: 0) {
                             ZStack {
-                                Canvas { g, size in VH.drawAir(g, size, now.pose, clock) }
-                                if let scene { SpriteView(scene: scene, preferredFramesPerSecond: active ? 60 : 10, options: [.allowsTransparency]) } else { ProgressView().controlSize(.small) }
-                                Canvas { g, size in VH.drawMarks(g, size, now.pose) }
+                                if let face = inside ? nil : dots?.image(now.pose.gap) {
+                                    Image(decorative: face, scale: 1).interpolation(.none).resizable().frame(width: 234, height: 348)
+                                } else {
+                                    Canvas { g, size in VH.drawAir(g, size, now.pose, clock) }
+                                    if let scene { SpriteView(scene: scene, preferredFramesPerSecond: active ? 60 : 10, options: [.allowsTransparency]) } else { ProgressView().controlSize(.small) }
+                                    Canvas { g, size in VH.drawMarks(g, size, now.pose) }
+                                }
                             }
                             .frame(width: 232, height: 348)
-                            .accessibilityElement().accessibilityLabel("Side view of a head in section. The air from the voice box to the lips glows with the voice, and the larynx rises and falls with pitch.")
+                            .accessibilityElement().accessibilityLabel(inside || dots == nil ? "Side view of a head in section. The air from the voice box to the lips glows with the voice, and the larynx rises and falls with pitch." : "Side view of a head drawn in white dots, facing right. The jaw and lips open and close with the sounds.")
                             info(now).padding(16).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
                         .background(RoundedRectangle(cornerRadius: 12).fill(VH.panel))
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(VH.teal.opacity(0.25)))
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                     }
-                    Text("A teaching picture, not a scan or simulation of your vocal tract. Examples follow the target and each sound roughly; while you record or replay, it shows only your pitch and loudness, not your mouth. Head painting from Voice Workshop by Fabio Angela (Apache-2.0).")
+                    Text("A teaching picture, not a scan or simulation of your vocal tract. Examples follow the target and each sound roughly; while you record or replay, it shows only your pitch and loudness, not your mouth. Head painting from Voice Workshop by Fabio Angela (Apache-2.0); the dot look follows Dither Veil by React Bits.")
                         .font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .task(id: shown) { if shown { await load() } }
+        .task(id: "\(shown) \(inside)") { if shown { await load() } }
         .task(id: lineKey) {
             guard let text = exampleText else { line = MouthTimeline(); return }
             let phrase = Phrase(start: 0, end: t.player?.duration ?? t.exercise.duration, text: text)
@@ -307,7 +389,7 @@ struct VoiceHeadGuide: View {
     }
 
     func load() async {
-        guard scene == nil, !missing else { return }
+        guard inside || dots == nil, scene == nil, !missing else { return }
         if let art = VH.art { scene = HeadScene(art); return }
         if let art = await Task.detached(priority: .userInitiated, operation: { HeadArt() }).value { VH.art = art; scene = HeadScene(art) } else { missing = true }
     }
@@ -346,7 +428,7 @@ struct VoiceHeadGuide: View {
         if let hz, !heard.isEmpty { p.semis = 12 * log2(hz / heard[heard.count / 2]) }
         p.larynx = VH.larynx(p.semis)
         p.voice = hz != nil && p.breath > 0.1 ? 1 : 0
-        if ex.isTone { p.ah(p.breath) } else { p.jaw = 0.2 + 0.3 * p.breath; p.tongue = CGVector(dx: 0, dy: 6 * p.breath) }
+        if ex.isTone { p.ah(p.breath) } else { p.jaw = 0.2 + 0.3 * p.breath; p.tongue = CGVector(dx: 0, dy: 6 * p.breath); p.gap = 60 * p.breath }
         return (p, nil, hz)
     }
 
