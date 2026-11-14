@@ -11,6 +11,7 @@ Local English shadowing app for one user on one Mac. Import a YouTube link or an
 - Ask before adding dependencies, changing the port, or changing where data is stored.
 - **Commit every change.** After each change you make, commit it (stage only the files you touched, short imperative message). If a single prompt leads to many changes, make several commits, one per important change, instead of one big commit at the end. Don't create branches, and don't push unless asked.
 - Never commit anything in `data/`, `.venv/` or `__pycache__/`.
+- **Delegate light tasks to Sonnet 5.5.** If the current session runs a heavier model than Sonnet, hand small or mechanical tasks (online searches, git commands, simple lookups, small edits that need no deep reasoning) to a subagent with `model: "sonnet"` instead of doing them yourself. Keep design-heavy or tricky work on the main model, and still check the subagent's result before reporting it.
 
 ## Stack and layout
 
