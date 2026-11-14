@@ -1,6 +1,6 @@
 # Shadow Studio
 
-A personal English shadowing app that runs on this Mac. No account, API key, subscription, or cloud audio processing.
+A personal English shadowing app that runs on this Mac. No account, API key, subscription, or cloud audio processing. The one optional exception is PDF import in the Mac app, which uses your own ElevenLabs account to read the text aloud.
 
 ## Open it
 
@@ -14,7 +14,7 @@ The local speech model and dependencies are already installed in this folder. Ke
 
 ## Your practice loop
 
-1. Choose **Add a voice**, paste a YouTube video link, or upload an audio/video file. Keep imports under 30 minutes and 150 MB.
+1. Choose **Add a voice**, paste a YouTube video link, or upload an audio/video file. Keep imports under 30 minutes and 150 MB. In the Mac app, **Upload a file** also accepts a PDF with selectable English text: a male ElevenLabs voice, picked at random for each import, reads the first 20,000 characters (about 20 minutes, ending at a sentence), and the phrases keep the PDF's exact wording. This needs the ElevenLabs command-line tool, signed in with `elevenlabs auth login`, and uses your ElevenLabs credits. Scanned PDFs without selectable text and password-protected PDFs are not supported.
 2. Wait for local transcription and automatic phrase splitting. Each sentence ending starts a new phrase, except for recognized abbreviations and initials. Longer sentences are divided into short practice chunks, usually 2–6 seconds and capped at about 8 seconds, with a short lead-in and tail where there is room. The splitter prefers a continuous quiet gap near the word boundary. At a sentence ending or when needed to keep a chunk short, it falls back to estimated word timing if there is no clear pause; those cuts may need **Edit phrase**. Music, overlapping voices and inaccurate word timestamps can still affect boundaries. The first import may take a little longer while the speech model loads.
 3. Play a phrase. Adjust playback speed or turn on Loop.
 4. Choose **Recall** to hide the text and practise from memory.
@@ -64,7 +64,7 @@ Scores are transparent practice heuristics, not validated assessments. Use repla
 
 ## Privacy and storage
 
-Audio, recordings, model files, and lesson information stay in this folder's **data/** directory. YouTube imports contact YouTube. The speech model downloads from Hugging Face once; after it is cached, uploaded files and recordings can be processed offline. No audio is sent to a transcription provider. Voice Training sends its built-in example text to ElevenLabs when generating a new spoken example; it does not send your recordings. Browser microphone permission is requested only when you click **Record a take**.
+Audio, recordings, model files, and lesson information stay in this folder's **data/** directory. YouTube imports contact YouTube. The speech model downloads from Hugging Face once; after it is cached, uploaded files and recordings can be processed offline. No audio is sent to a transcription provider. Voice Training sends its built-in example text to ElevenLabs when generating a new spoken example; it does not send your recordings. PDF import reads the PDF on this Mac, then sends the text it will voice (up to 20,000 characters) to ElevenLabs, where it is kept in your ElevenLabs history like any other generation; the PDF file itself and your recordings are not sent. Browser microphone permission is requested only when you click **Record a take**.
 
 The delete button removes a session and its audio/recordings from the Mac. Deletion has an explicit confirmation dialog. Back up the **data/** folder if you want to keep your practice.
 

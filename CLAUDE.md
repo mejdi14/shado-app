@@ -1,6 +1,6 @@
 # Shadow Studio
 
-Local English shadowing app for one user on one Mac. Import a YouTube link or an audio/video file, transcribe it locally, split it into phrases, then record takes and get practice feedback (word accuracy, pace & rhythm, intonation). No accounts, API keys or cloud audio processing. See `README.md` for the user-facing description.
+Local English shadowing app for one user on one Mac. Import a YouTube link, an audio/video file or (Mac app) a PDF read aloud by ElevenLabs, transcribe it locally, split it into phrases, then record takes and get practice feedback (word accuracy, pace & rhythm, intonation). No accounts, API keys or cloud audio processing. See `README.md` for the user-facing description.
 
 ## Working rules
 
@@ -31,10 +31,11 @@ Double-click `Start Shadow Studio.command`, or run `.venv/bin/python app.py`. Th
 ## Behaviour that must stay true
 
 - **Local only.** The server must keep accepting only `127.0.0.1:PORT` / `localhost:PORT` hosts. State-changing requests require the `x-shadow-token` header. Keep the CSP and security headers in the `local_only` middleware. Don't bind to `0.0.0.0` or add external services.
-- **Privacy.** No audio, transcripts or recordings leave the Mac. The only network use is YouTube imports and the one-time Hugging Face model download.
+- **Privacy.** No audio, transcripts or recordings leave the Mac. The only network use is YouTube imports, the one-time Hugging Face model download, and PDF import (`/api/pdf`), which sends the PDF's extracted text to ElevenLabs through the `elevenlabs` CLI. Recordings and takes are never sent. Keep `/api/upload` fully local.
 - **Import limits** (keep these in sync across files when changed):
   - Max length: 30 minutes. `app.py` (`16000*1800` in `finish_import`, `>1800` in the yt-dlp `limit` filter, `duration=1801` in `upload`), the hint text in `static/index.html`, and `README.md`.
-  - Max file size: 150 MB. `app.py` (`max_filesize` and the upload size check), `static/app.js` import form check, `static/index.html` file-drop label, `mac/Store.swift` (`submitImport`) and `mac/Views.swift` (import sheet text), the mobile app (`ShadowStore.kt` `MAX_UPLOAD`, import sheet text in `ShadowScreens.kt` and `ShadowViews.swift`), and `README.md`.
+  - Max file size: 150 MB. `app.py` (`max_filesize` and the size checks in `upload` and `pdf`), `static/app.js` import form check, `static/index.html` file-drop label, `mac/Store.swift` (`submitImport`) and `mac/Views.swift` (import sheet text), the mobile app (`ShadowStore.kt` `MAX_UPLOAD`, import sheet text in `ShadowScreens.kt` and `ShadowViews.swift`), and `README.md`.
+- **PDF import:** at most 20,000 characters are voiced. `app.py` (`PDF_CHARS`), the import sheet note in `mac/Views.swift`, and `README.md`.
 - **Phrase length:** edited phrases must be 30 seconds or less (`app.py` `edit`, hint in `static/index.html`). Recorded takes are capped at 34 seconds (`static/app.js` auto-stop, the mobile `ShadowModel.swift` / `ShadowViewModel.kt` auto-stop, `README.md`).
 - **Honest feedback.** Scores are practice heuristics, not validated pronunciation grades. Keep that wording in the UI and README; don't present them as assessments.
 - **YouTube:** no cookies, no logins. If a link fails, the fallback is file upload.
