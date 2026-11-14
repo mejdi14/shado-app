@@ -812,7 +812,7 @@ struct ImportSheet: View {
                         Image(systemName: s.importFile == nil ? "arrow.up.circle" : "doc.fill").font(.system(size: 22, weight: .light)).foregroundStyle(.secondary)
                         Text(s.importFile?.lastPathComponent ?? "Click to choose, or drop a file here").font(.system(size: 13, weight: .medium)).lineLimit(1)
                         muted("MP3, WAV, M4A, MP4, WebM · up to 150 MB · up to 30 minutes")
-                        muted("Or a PDF with selectable English text, read aloud by a random male ElevenLabs voice")
+                        muted("Or a PDF with selectable English text, read aloud by an ElevenLabs voice you choose")
                     }.frame(maxWidth: .infinity).padding(.vertical, 26)
                         .background(RoundedRectangle(cornerRadius: 12).fill(dropping ? Color.selected : Color.subtle))
                         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5])).foregroundStyle(Color.line))
@@ -831,6 +831,7 @@ struct ImportSheet: View {
                     muted("Up to 30 minutes. Import content you have permission to use.")
                 }
             }
+            if s.importUpload && s.importFile?.pathExtension.lowercased() == "pdf" { PDFVoicePicker() }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 2)
                 muted(s.importUpload && s.importFile?.pathExtension.lowercased() == "pdf" ? "The text of this PDF (the first 20,000 characters) is sent to ElevenLabs to create the voice, using your ElevenLabs account and credits. Your recordings stay on your Mac." : "Processing and recordings stay on your Mac. Importing a link connects to YouTube; the first transcription downloads a speech model.").fixedSize(horizontal: false, vertical: true)
@@ -839,6 +840,7 @@ struct ImportSheet: View {
             HStack { Spacer(); Button("Cancel") { s.showImport = false }.buttonStyle(PillStyle()); Button("Create session") { create() }.buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction) }
         }
         .padding(24).frame(width: 520).background(Color.surface)
+        .onDisappear { s.stopSample() }
         .fileImporter(isPresented: $picking, allowedContentTypes: [.audio, .movie, .audiovisualContent, .pdf] + ["webm", "mkv", "m4a"].compactMap { UTType(filenameExtension: $0) }) { result in
             if case .success(let url) = result { s.importFile = url; s.importURL = ""; s.importError = "" }
         }
@@ -849,6 +851,38 @@ struct ImportSheet: View {
             s.importURL = ""
         } else { s.importFile = nil }
         Task { await s.submitImport() }
+    }
+}
+
+struct PDFVoicePicker: View {
+    @EnvironmentObject var s: Store
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Reading voice").font(.system(size: 12, weight: .medium))
+            if s.pdfVoices.isEmpty {
+                if s.pdfVoiceError.isEmpty { HStack(spacing: 8) { ProgressView().controlSize(.small); muted("Loading your ElevenLabs voices…") } }
+                else { Text(s.pdfVoiceError).foregroundStyle(Color.rec).font(.system(size: 12.5)); Button("Try again") { Task { await s.loadPDFVoices() } }.buttonStyle(PillStyle(compact: true)) }
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(s.pdfVoices) { v in
+                        HStack(spacing: 8) {
+                            Button { s.toggleSample(v) } label: { Image(systemName: s.sampleVoice == v.id ? "stop.fill" : "play.fill").font(.system(size: 10)) }.buttonStyle(RoundStyle(size: 24)).help("Hear a short sample of \(v.name)")
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(v.name).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                                Text([v.gender, v.accent].filter { !$0.isEmpty }.joined(separator: " · ").capitalized).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            if s.pdfVoice == v.id { Image(systemName: "checkmark.circle.fill").foregroundStyle(.secondary) }
+                        }
+                        .padding(8).background(RoundedRectangle(cornerRadius: 10).fill(s.pdfVoice == v.id ? Color.selected : Color.subtle))
+                        .contentShape(Rectangle()).onTapGesture { s.pdfVoice = v.id }
+                        .accessibilityElement(children: .contain)
+                    }
+                }
+                muted("Samples are free to play. Only the final reading uses your ElevenLabs credits.")
+            }
+        }
+        .task { if s.pdfVoices.isEmpty { await s.loadPDFVoices() } }
     }
 }
 

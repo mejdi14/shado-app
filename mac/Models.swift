@@ -12,6 +12,7 @@ struct Lesson: Codable { let id: String; var title: String; let source: String; 
 struct LibraryItem: Codable, Identifiable { let id: String; let title: String; let source: String; let duration: Double; let sample: Bool; let count: Int; let practised: Int }
 struct JobStart: Codable { let jobId: String }
 struct Job: Codable { let state: String; let message: String?; let lessonId: String? }
+struct PDFVoice: Codable, Identifiable { let id: String; let name: String; let about: String; let gender: String; let accent: String }
 struct Busy { var title: String; var message: String }
 struct Track: Codable { let energy: [Double]; let pitch: [Double?]; let speed: Double? }
 struct VoiceData: Codable { let hop: Double; let source: Track; let take: Track? }

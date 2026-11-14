@@ -40,6 +40,12 @@ enum Mode: String, CaseIterable {
     @Published var importURL = ""
     @Published var importFile: URL?
     @Published var importError = ""
+    @Published var pdfVoices: [PDFVoice] = []
+    @Published var pdfVoiceError = ""
+    @Published var pdfVoice = UserDefaults.standard.string(forKey: "pdf-voice") ?? "" { didSet { UserDefaults.standard.set(pdfVoice, forKey: "pdf-voice") } }
+    @Published var sampleVoice: String?
+    var samplePlayer: AVAudioPlayer?
+    var sampleTask: Task<Void, Never>?
 
     var original: AVAudioPlayer?
     var takePlayer: AVAudioPlayer?
@@ -302,12 +308,40 @@ enum Mode: String, CaseIterable {
         }
     }
 
+    func loadPDFVoices() async {
+        pdfVoiceError = ""
+        do {
+            pdfVoices = try await api.get([PDFVoice].self, "/api/pdf/voices")
+            if !pdfVoices.contains(where: { $0.id == pdfVoice }) { pdfVoice = pdfVoices.first?.id ?? "" }
+        } catch { pdfVoices = []; pdfVoiceError = error.localizedDescription }
+    }
+
+    func stopSample() { sampleTask?.cancel(); sampleTask = nil; samplePlayer?.stop(); samplePlayer = nil; sampleVoice = nil }
+
+    func toggleSample(_ v: PDFVoice) {
+        let same = sampleVoice == v.id
+        stopSample()
+        if same { return }
+        sampleVoice = v.id
+        sampleTask = Task {
+            do {
+                let data = try await api.send("/api/pdf/voices/\(v.id)/preview")
+                if Task.isCancelled { return }
+                let p = try AVAudioPlayer(data: data)
+                stopPlayback(); samplePlayer = p; p.play()
+                try await Task.sleep(nanoseconds: UInt64((p.duration + 0.2) * 1_000_000_000))
+                if sampleVoice == v.id { sampleVoice = nil }
+            } catch is CancellationError {
+            } catch { if sampleVoice == v.id { sampleVoice = nil; pdfVoiceError = error.localizedDescription } }
+        }
+    }
+
     func submitImport() async {
         let url = importURL.trimmingCharacters(in: .whitespacesAndNewlines)
         importError = ""
         if importFile == nil && url.isEmpty { importError = "Paste a YouTube link or choose a file."; return }
         if let f = importFile, ((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 150 * 1024 * 1024 { importError = "Choose a file smaller than 150 MB."; return }
-        showImport = false
+        showImport = false; stopSample()
         defer { busy = nil }
         do {
             busy = Busy(title: "Preparing your practice", message: "Preparing audio…")
@@ -333,6 +367,7 @@ enum Mode: String, CaseIterable {
         let input = try FileHandle(forReadingFrom: file)
         while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { out.write(chunk) }
         try input.close()
+        if file.pathExtension.lowercased() == "pdf", !pdfVoice.isEmpty { out.write(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"voice_id\"\r\n\r\n\(pdfVoice)".utf8)) }
         out.write(Data("\r\n--\(boundary)--\r\n".utf8)); try out.close()
         return try await api.get(JobStart.self, file.pathExtension.lowercased() == "pdf" ? "/api/pdf" : "/api/upload", method: "POST", contentType: "multipart/form-data; boundary=\(boundary)", file: temp)
     }
