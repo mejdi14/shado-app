@@ -1,4 +1,4 @@
-mac/voice-workshop-head.jpg is public/anatomy/head.jpg from Voice Workshop (https://github.com/MithrilMan/voice-workshop), Copyright 2026 Fabio Angela, licensed under the Apache License 2.0. The file is included unmodified. At run time Shadow Studio makes its background and airway transparent, cuts it into parts and warps them to animate the jaw, tongue, lower lip and larynx.
+mac/voice-workshop-head.jpg is public/anatomy/head.jpg from Voice Workshop (https://github.com/MithrilMan/voice-workshop), Copyright 2026 Fabio Angela, licensed under the Apache License 2.0. The file is included unmodified. At run time Shadow Studio makes its background and airway transparent, cuts it into parts and warps them to animate the jaw, tongue, lower lip and larynx. mac/voice-dot-head.png is a modified, derived picture made for Shadow Studio by mac/make_dot_head.py: only the outline of the head is traced from that painting, and the grey shading and features (ear, eye, nose, lips, jaw) are Shadow Studio's own.
 
 NOTICE
 
