@@ -94,6 +94,7 @@ def grey():
         return np.clip((-zx * lx - zy * ly + lz) / np.sqrt(lx * lx + ly * ly + lz * lz) / norm, 0, 1)
 
     g = 0.04 + 0.78 * lit(0.74, -0.5, 0.45) ** 1.25 + 0.4 * lit(-0.9, -0.25, 0.18) ** 1.5 + 0.1 * lit(0.1, -0.95, 0.3) + 0.22 * lit(1, 0.25, 0.15) ** 2
+    g += 0.3 * blob(770, 866, 36, 52)  # keeps the lower lip joined to the chin when the mouth opens
     neck = inside([(760, 1034)] + jaw + [(330, 655), (200, 700), (40, 745), (0, 760), (0, 1536), (1024, 1536), (1024, 1034)])
     shade = ni.gaussian_filter(neck.astype(float), 16)
     g *= 1 - 0.25 * shade - 0.3 * shade * np.exp(-line(jaw) / 80)
