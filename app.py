@@ -376,7 +376,7 @@ def pdf_text(source):
             pages.append(page.extract_text() or ''); size+=len(pages[-1])
             if size>PDF_CHARS*2: break
     except Exception: raise ValueError('This PDF could not be read. If it is password-protected, save an unlocked copy and try again.')
-    raw=re.sub(r'(?m)^[ \t]*\d+[ \t]*\n?','',re.sub(r'[\x00-\x08\x0b-\x1f­]','','\n'.join(pages)))
+    raw=re.sub(r'(?m)^[ \t]*\d+[ \t]*$\n?','',re.sub(r'[\x00-\x08\x0b-\x1f­]','','\n'.join(pages)))
     blocks=[re.sub(r'\s+',' ',re.sub(r'(?<=[A-Za-z])-\n(?=[a-z])','',b)).strip() for b in re.split(r'\n\s*\n',raw)]
     # A short block with no closing punctuation is most likely a heading; end it so it is not read into the next sentence.
     text=' '.join(b+'.' if len(b)<80 and b[-1].isalnum() else b for b in blocks if b)
