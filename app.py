@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'models'))
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-import json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib, base64, random
+import urllib.request, json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib, base64, random
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
@@ -13,7 +13,7 @@ from scipy.io import wavfile
 from scipy.signal import resample_poly
 from scipy.ndimage import minimum_filter1d, maximum_filter1d
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 DATA = ROOT / 'data'
@@ -402,8 +402,44 @@ def timed_words(alignment, offset):
         else: cur=SimpleNamespace(word=' '+ch,start=offset+s,end=offset+e); found.append(cur)
     return found
 
+PDF_VOICES={}
+PDF_PREVIEWS={}
+
+def pdf_voices():
+    if not PDF_VOICES:
+        by={}
+        for gender in ('male','female'):
+            got=[v for v in eleven(['voices','search','--gender',gender,'--page-size','100']).get('voices') or [] if v.get('voice_id') and (v.get('labels') or {}).get('language','en')=='en' and v.get('preview_url')]
+            by[gender]=sorted(got,key=lambda v:(v.get('category')!='premade',(v.get('labels') or {}).get('accent') not in ('american','british'),str(v.get('name'))))
+        picked=by['male'][:4]+by['female'][:4]
+        picked+=[v for v in by['male'][4:]+by['female'][4:] if v not in picked][:8-len(picked)]
+        for v in picked:
+            name,_,about=str(v.get('name') or '').partition(' - '); labels=v.get('labels') or {}
+            PDF_VOICES[v['voice_id']]={'id':v['voice_id'],'name':name.strip() or 'Voice','about':about.strip(),'gender':labels.get('gender') or '','accent':labels.get('accent') or '','preview':v['preview_url']}
+    return PDF_VOICES
+
+@app.get('/api/pdf/voices')
+def pdf_voice_list():
+    try: voices=pdf_voices()
+    except ValueError as e: raise HTTPException(502,str(e))
+    if not voices: raise HTTPException(404,'No English voices were found in your ElevenLabs account. Add some to your voices, then try again.')
+    return [{k:v[k] for k in ('id','name','about','gender','accent')} for v in voices.values()]
+
+@app.get('/api/pdf/voices/{vid}/preview')
+def pdf_voice_preview(vid:str):
+    try: voice=pdf_voices().get(vid)
+    except ValueError as e: raise HTTPException(502,str(e))
+    if not voice: raise HTTPException(404,'Choose one of the listed voices.')
+    if vid not in PDF_PREVIEWS:
+        url=urlparse(voice['preview'])
+        if url.scheme!='https' or not (url.hostname or '').endswith(('.googleapis.com','.elevenlabs.io')): raise HTTPException(502,'This voice has no sample available.')
+        try:
+            with urllib.request.urlopen(voice['preview'],timeout=20) as r: PDF_PREVIEWS[vid]=r.read(3*1024*1024)
+        except (OSError,ValueError): raise HTTPException(502,'The voice sample could not be loaded. Check your connection and try again.')
+    return Response(PDF_PREVIEWS[vid],media_type='audio/mpeg')
+
 @app.post('/api/pdf')
-async def pdf(file:UploadFile=File(...), title:str=Form('')):
+async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('')):
     lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
     source=path/'upload.pdf'; size=0
     with source.open('wb') as out:
@@ -419,16 +455,18 @@ async def pdf(file:UploadFile=File(...), title:str=Form('')):
             text=pdf_text(source); chunks=[]
             while text: k=text_cut(text,2500); chunks.append(text[:k].strip()); text=text[k:].lstrip()
             jobs[jid]['message']='Choosing a voice…'
-            voices=[v for v in eleven(['voices','search','--gender','male','--page-size','100']).get('voices') or [] if v.get('voice_id') and (v.get('labels') or {}).get('language','en')=='en']
-            if not voices: raise ValueError('No male English voice was found in your ElevenLabs account. Add one to your voices, then try again.')
-            voice=random.choice(voices); name=str(voice.get('name') or '').split(' - ')[0].strip() or 'a male voice'
+            voices=pdf_voices()
+            if not voices: raise ValueError('No English voices were found in your ElevenLabs account. Add some to your voices, then try again.')
+            voice=voices.get(voice_id) if voice_id else random.choice([v for v in voices.values() if v['gender']=='male'] or list(voices.values()))
+            if not voice: raise ValueError('That voice is no longer in your ElevenLabs list. Choose another one and try again.')
+            name=voice['name']
             audio=[]; segments=[]; timed=True; offset=0.
             for n,chunk in enumerate(chunks):
                 jobs[jid]['message']=f'{name} is reading your PDF… part {n+1} of {len(chunks)}'
                 body={'text':chunk,'model_id':'eleven_multilingual_v2'}
                 if n: body['previous_text']=chunks[n-1][-300:]
                 if n+1<len(chunks): body['next_text']=chunks[n+1][:300]
-                out=eleven(['text-to-speech','convert_with_timestamps','--voice-id',voice['voice_id'],'--json','-'],json.dumps(body))
+                out=eleven(['text-to-speech','convert_with_timestamps','--voice-id',voice['id'],'--json','-'],json.dumps(body))
                 if not out.get('audio_base64'): raise ValueError(ELEVEN_FAILED)
                 part=path/f'part{n}.mp3'; wav=path/f'part{n}.wav'
                 part.write_bytes(base64.b64decode(out['audio_base64'])); convert(part,wav)
