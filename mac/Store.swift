@@ -37,12 +37,15 @@ enum Mode: String, CaseIterable {
     @Published var showResplit = false
     @Published var showFeedback = false
     @Published var importUpload = false
+    @Published var importLanguage = "en"
     @Published var importURL = ""
     @Published var importFile: URL?
     @Published var importError = ""
     @Published var pdfVoices: [PDFVoice] = []
     @Published var pdfVoiceError = ""
-    @Published var pdfVoice = UserDefaults.standard.string(forKey: "pdf-voice") ?? "" { didSet { UserDefaults.standard.set(pdfVoice, forKey: "pdf-voice") } }
+    @Published private(set) var pdfVoice = ""
+    private var pdfVoiceLanguage = ""
+    private var pdfVoiceKey: String { importLanguage == "fr" ? "pdf-voice-fr" : "pdf-voice" }
     @Published var sampleVoice: String?
     var samplePlayer: AVAudioPlayer?
     var sampleTask: Task<Void, Never>?
@@ -308,24 +311,41 @@ enum Mode: String, CaseIterable {
         }
     }
 
+    func selectPDFVoice(_ id: String) {
+        pdfVoice = id
+        UserDefaults.standard.set(id, forKey: pdfVoiceKey)
+    }
+
     func loadPDFVoices() async {
+        let language = importLanguage
+        stopSample()
+        pdfVoices = []
+        pdfVoice = ""
+        pdfVoiceLanguage = ""
         pdfVoiceError = ""
         do {
-            pdfVoices = try await api.get([PDFVoice].self, "/api/pdf/voices")
-            if !pdfVoices.contains(where: { $0.id == pdfVoice }) { pdfVoice = pdfVoices.first?.id ?? "" }
-        } catch { pdfVoices = []; pdfVoiceError = error.localizedDescription }
+            let voices = try await api.get([PDFVoice].self, "/api/pdf/voices?language=\(language)")
+            guard !Task.isCancelled, importLanguage == language else { return }
+            let saved = UserDefaults.standard.string(forKey: pdfVoiceKey)
+            pdfVoices = voices
+            pdfVoice = voices.first(where: { $0.id == saved })?.id ?? voices.first?.id ?? ""
+            pdfVoiceLanguage = language
+        } catch {
+            guard !Task.isCancelled, importLanguage == language else { return }
+            pdfVoiceError = error.localizedDescription
+        }
     }
 
     func stopSample() { sampleTask?.cancel(); sampleTask = nil; samplePlayer?.stop(); samplePlayer = nil; sampleVoice = nil }
 
     func toggleSample(_ v: PDFVoice) {
-        let same = sampleVoice == v.id
+        let same = sampleVoice == v.id, language = importLanguage
         stopSample()
         if same { return }
         sampleVoice = v.id
         sampleTask = Task {
             do {
-                let data = try await api.send("/api/pdf/voices/\(v.id)/preview")
+                let data = try await api.send("/api/pdf/voices/\(v.id)/preview?language=\(language)")
                 if Task.isCancelled { return }
                 let p = try AVAudioPlayer(data: data)
                 stopPlayback(); samplePlayer = p; p.play()
@@ -341,13 +361,14 @@ enum Mode: String, CaseIterable {
         importError = ""
         if importFile == nil && url.isEmpty { importError = "Paste a YouTube link or choose a file."; return }
         if let f = importFile, ((try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 150 * 1024 * 1024 { importError = "Choose a file smaller than 150 MB."; return }
+        if importFile?.pathExtension.lowercased() == "pdf", pdfVoiceLanguage != importLanguage || pdfVoice.isEmpty { importError = "Choose a reading voice for this PDF."; return }
         showImport = false; stopSample()
         defer { busy = nil }
         do {
             busy = Busy(title: "Preparing your practice", message: "Preparing audio…")
             let j: JobStart
             if let f = importFile { j = try await uploadFile(f) }
-            else { j = try await api.get(JobStart.self, "/api/import", method: "POST", json: ["url": url]) }
+            else { j = try await api.get(JobStart.self, "/api/import", method: "POST", json: ["url": url, "language": importLanguage]) }
             let lid = try await waitJob(j.jobId, "Finding your phrases")
             try await loadLesson(lid); showTraining = false; showLibrary = false
             importURL = ""; importFile = nil
@@ -367,6 +388,7 @@ enum Mode: String, CaseIterable {
         let input = try FileHandle(forReadingFrom: file)
         while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty { out.write(chunk) }
         try input.close()
+        out.write(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n\(importLanguage)".utf8))
         if file.pathExtension.lowercased() == "pdf", !pdfVoice.isEmpty { out.write(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"voice_id\"\r\n\r\n\(pdfVoice)".utf8)) }
         out.write(Data("\r\n--\(boundary)--\r\n".utf8)); try out.close()
         return try await api.get(JobStart.self, file.pathExtension.lowercased() == "pdf" ? "/api/pdf" : "/api/upload", method: "POST", contentType: "multipart/form-data; boundary=\(boundary)", file: temp)

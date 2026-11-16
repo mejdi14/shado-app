@@ -8,8 +8,8 @@ struct TakeResult: Codable {
 }
 struct Word: Codable { let start: Double; let end: Double; let word: String }
 struct Phrase: Codable { var start: Double; var end: Double; var text: String; var words: [Word]?; var practised: Bool?; var latest: TakeResult?; var takes: Int? }
-struct Lesson: Codable { let id: String; var title: String; let source: String; let duration: Double; var phrases: [Phrase]; let sample: Bool? }
-struct LibraryItem: Codable, Identifiable { let id: String; let title: String; let source: String; let duration: Double; let sample: Bool; let count: Int; let practised: Int }
+struct Lesson: Codable { let id: String; var title: String; let source: String; let duration: Double; var phrases: [Phrase]; let sample: Bool?; let language: String? }
+struct LibraryItem: Codable, Identifiable { let id: String; let title: String; let source: String; let duration: Double; let sample: Bool; let count: Int; let practised: Int; let language: String? }
 struct JobStart: Codable { let jobId: String }
 struct Job: Codable { let state: String; let message: String?; let lessonId: String? }
 struct PDFVoice: Codable, Identifiable { let id: String; let name: String; let about: String; let gender: String; let accent: String }

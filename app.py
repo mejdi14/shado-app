@@ -1,10 +1,10 @@
-"""Shadow Studio: a single-user, loopback-only English shadowing workspace."""
+"""Shadow Studio: a single-user, loopback-only English and French shadowing workspace."""
 import os
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'models'))
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
-import urllib.request, json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib, base64, random
+import urllib.request, json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib, base64, random, unicodedata
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
@@ -25,7 +25,8 @@ LAN = os.environ.get('SHADOW_LAN') == '1'
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 executor = ThreadPoolExecutor(max_workers=1)
 jobs = {}
-model = None
+models = {}
+LANGUAGES = {'en': 'English', 'fr': 'French'}
 model_lock = threading.Lock()
 file_lock = threading.Lock()
 
@@ -91,13 +92,16 @@ def load_audio(path):
     if sr != 16000: y = resample_poly(y,16000,sr)
     return y.astype(np.float32)
 
-def transcribe(path):
-    global model
+def import_language(language):
+    if language not in ('en','fr'): raise HTTPException(400,'Choose English or French for this session.')
+    return language
+
+def transcribe(path, language):
     with model_lock:
-        if model is None:
+        if language not in models:
             from faster_whisper import WhisperModel
-            model = WhisperModel('base.en', device='cpu', compute_type='int8', download_root=str(DATA/'models'))
-        segments, info = model.transcribe(str(path), language='en', word_timestamps=True, vad_filter=True, condition_on_previous_text=False, beam_size=5)
+            models[language] = WhisperModel('base.en' if language=='en' else 'base', device='cpu', compute_type='int8', download_root=str(DATA/'models'))
+        segments, info = models[language].transcribe(str(path), language=language, word_timestamps=True, vad_filter=True, condition_on_previous_text=False, beam_size=5)
         return list(segments)
 
 CLAUSE_START={'and','but','or','so','because','although','though','while','whereas','when','whenever','where','wherever','if','unless','until','since','after','before','which','who','whom','whose','then','however','yet','nor','also','actually','anyway','instead','otherwise','therefore','meanwhile','plus'}
@@ -163,7 +167,7 @@ def sound_end(w, quiet):
     return s/100
 
 def break_punctuation(word, nxt):
-    tail=word.strip().rstrip('"\'\u201d\u2019)]}'); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'"))
+    tail=word.strip().rstrip('"\'\u201d\u2019»)]}'); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'"))
     if core in ABBREV or re.fullmatch(r"(?:[A-Za-z]\.)+",tail): punct=0
     elif tail.endswith(('...','\u2026',';',':')): punct=.7
     elif tail.endswith(('.','!','?')): punct=1
@@ -173,7 +177,7 @@ def break_punctuation(word, nxt):
     return punct
 
 def break_score(word, nxt, pause, seg_end):
-    tail=word.strip().rstrip('"\'\u201d\u2019)]}'); punct=break_punctuation(word,nxt); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'")); head=re.sub(r"[^a-z']","",nxt.lower().replace('\u2019',"'"))
+    tail=word.strip().rstrip('"\'\u201d\u2019»)]}'); punct=break_punctuation(word,nxt); core=re.sub(r"[^a-z']","",tail.lower().replace('\u2019',"'")); head=re.sub(r"[^a-z']","",nxt.lower().replace('\u2019',"'"))
     score=2*punct+.5*(1-math.exp(-pause/.25))+(.1 if seg_end else 0)-(.15 if pause<.05 else 0)+(.2 if head in CLAUSE_START else .1 if head=='that' else 0)
     return score-(.6 if not punct and core in NO_END else 0)
 
@@ -186,7 +190,7 @@ def make_phrases(segments, audio):
     for seg in segments:
         if seg.no_speech_prob > .8: continue
         for w in (seg.words or []):
-            if not re.search(r'[A-Za-z0-9]',w.word):
+            if not any(ch.isalnum() for ch in w.word):
                 if words: words[-1]['word']+=w.word
                 continue
             start=max(float(w.start),words[-1]['start'] if words else 0.)
@@ -244,14 +248,14 @@ def job_start(action):
     executor.submit(work)
     return {'jobId':jid}
 
-def finish_import(lid, title, source, jid, segments=None):
+def finish_import(lid, title, source, jid, language, segments=None):
     path=folder(lid)
     audio=load_audio(path/'audio.wav')
     if len(audio)>16000*1800: raise ValueError('Choose a video or file under 30 minutes for focused practice.')
     jobs[jid]['message']='Finding phrases…'+('' if segments else ' The first import downloads a speech model (about 150 MB).')
-    phrases=make_phrases(segments or transcribe(path/'audio.wav'), audio)
-    if not phrases: raise ValueError('No clear English speech found. Try a clip with a single speaker and little music.')
-    lesson={'id':lid,'title':title[:160],'source':source,'created':time.time(),'duration':round(len(audio)/16000,2),'phrases':phrases,'sample':False}
+    phrases=make_phrases(segments or transcribe(path/'audio.wav', language), audio)
+    if not phrases: raise ValueError(f'No clear {LANGUAGES[language]} speech found. Try a clip with a single speaker and little music.')
+    lesson={'id':lid,'title':title[:160],'source':source,'created':time.time(),'duration':round(len(audio)/16000,2),'phrases':phrases,'sample':False,'language':language}
     save_lesson(lesson)
     return lid
 
@@ -260,7 +264,7 @@ def library():
     lessons=[]
     for p in DATA.glob('*/lesson.json'):
         try:
-            l=json.loads(p.read_text()); lessons.append({k:l[k] for k in ['id','title','source','created','duration','sample']} | {'count':len(l['phrases']),'practised':sum(bool(x.get('practised')) for x in l['phrases'])})
+            l=json.loads(p.read_text()); lessons.append({k:l[k] for k in ['id','title','source','created','duration','sample']} | {'language':l.get('language','en'),'count':len(l['phrases']),'practised':sum(bool(x.get('practised')) for x in l['phrases'])})
         except (ValueError,KeyError): pass
     return sorted(lessons,key=lambda x:x['created'],reverse=True)
 
@@ -308,6 +312,7 @@ def job(jid:str):
 @app.post('/api/import')
 async def youtube(request:Request):
     body=await request.json()
+    language=import_language(body.get('language','en'))
     url=str(body.get('url','')).strip()
     parsed=urlparse(url)
     host=(parsed.hostname or '').lower()
@@ -338,11 +343,12 @@ async def youtube(request:Request):
         except Exception as exc:
             if isinstance(exc,ValueError): raise
             raise ValueError('YouTube blocked this import or the video is unavailable. Try another link, or upload an audio/video file you can use.')
-        return finish_import(lid,info.get('title','YouTube practice'),canonical,jid)
+        return finish_import(lid,info.get('title','YouTube practice'),canonical,jid,language)
     return job_start(action)
 
 @app.post('/api/upload')
-async def upload(file:UploadFile=File(...), title:str=Form('')):
+async def upload(file:UploadFile=File(...), title:str=Form(''), language:str=Form('en')):
+    language=import_language(language)
     lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
     source=path/'upload.media'; size=0
     with source.open('wb') as out:
@@ -355,7 +361,7 @@ async def upload(file:UploadFile=File(...), title:str=Form('')):
         jobs[jid]['cleanup']=str(path)
         try:
             convert(source,path/'audio.wav',duration=1801)
-            return finish_import(lid,title or Path(file.filename or 'My practice').stem,'Uploaded file',jid)
+            return finish_import(lid,title or Path(file.filename or 'My practice').stem,'Uploaded file',jid,language)
         finally: source.unlink(missing_ok=True)
     return job_start(action)
 
@@ -364,7 +370,7 @@ ELEVEN_FAILED='ElevenLabs could not create the voice. Check your connection, tha
 
 def text_cut(text, n):
     if len(text)<=n: return len(text)
-    ends=[m.end() for m in re.finditer(r'[.!?]["\')”’]*\s',text[:n])]
+    ends=[m.end() for m in re.finditer(r'[.!?]["\')”’»]*\s',text[:n])]
     return ends[-1] if ends and ends[-1]>n//2 else (text.rfind(' ',0,n)+1 or n)
 
 def pdf_text(source):
@@ -373,14 +379,14 @@ def pdf_text(source):
     try:
         pages=[]; size=0
         for page in PdfReader(str(source)).pages:
-            pages.append(page.extract_text() or ''); size+=len(pages[-1])
+            pages.append(unicodedata.normalize('NFC',page.extract_text() or '')); size+=len(pages[-1])
             if size>PDF_CHARS*2: break
     except Exception: raise ValueError('This PDF could not be read. If it is password-protected, save an unlocked copy and try again.')
     raw=re.sub(r'(?m)^[ \t]*\d+[ \t]*$\n?','',re.sub(r'[\x00-\x08\x0b-\x1f­]','','\n'.join(pages)))
-    blocks=[re.sub(r'\s+',' ',re.sub(r'(?<=[A-Za-z])-\n(?=[a-z])','',b)).strip() for b in re.split(r'\n\s*\n',raw)]
+    blocks=[re.sub(r'\s+',' ',re.sub(r'(?<=[^\W\d_])-\n(?=[a-zàâæçéèêëîïôœùûüÿ])','',b)).strip() for b in re.split(r'\n\s*\n',raw)]
     # A short block with no closing punctuation is most likely a heading; end it so it is not read into the next sentence.
     text=' '.join(b+'.' if len(b)<80 and b[-1].isalnum() else b for b in blocks if b)
-    if len(re.findall(r'[A-Za-z]{2,}',text))<5: raise ValueError('No readable text was found in this PDF. Scanned pages are pictures of text; choose a PDF whose text you can select and copy.')
+    if len(re.findall(r'[^\W\d_]{2,}',text))<5: raise ValueError('No readable text was found in this PDF. Scanned pages are pictures of text; choose a PDF whose text you can select and copy.')
     return text[:text_cut(text,PDF_CHARS)].strip()
 
 def eleven(args, body=None):
@@ -405,29 +411,40 @@ def timed_words(alignment, offset):
 PDF_VOICES={}
 PDF_PREVIEWS={}
 
-def pdf_voices():
-    if not PDF_VOICES:
+def no_pdf_voices(language):
+    return f'No {LANGUAGES[language]} voices with samples were found in your ElevenLabs account. Add a voice from the ElevenLabs Voice Library to My Voices, then try again.'
+
+def pdf_voices(language, refresh=False):
+    if not refresh and language in PDF_VOICES: return PDF_VOICES[language]
+    if language=='fr':
+        available=eleven(['voices','search','--language','fr','--page-size','100']).get('voices') or []
+        picked=sorted((v for v in available if v.get('voice_id') and v.get('preview_url')),key=lambda v:str(v.get('name')))[:8]
+    else:
         by={}
         for gender in ('male','female'):
             got=[v for v in eleven(['voices','search','--gender',gender,'--page-size','100']).get('voices') or [] if v.get('voice_id') and (v.get('labels') or {}).get('language','en')=='en' and v.get('preview_url')]
             by[gender]=sorted(got,key=lambda v:(v.get('category')!='premade',(v.get('labels') or {}).get('accent') not in ('american','british'),str(v.get('name'))))
         picked=by['male'][:4]+by['female'][:4]
         picked+=[v for v in by['male'][4:]+by['female'][4:] if v not in picked][:8-len(picked)]
-        for v in picked:
-            name,_,about=str(v.get('name') or '').partition(' - '); labels=v.get('labels') or {}
-            PDF_VOICES[v['voice_id']]={'id':v['voice_id'],'name':name.strip() or 'Voice','about':about.strip(),'gender':labels.get('gender') or '','accent':labels.get('accent') or '','preview':v['preview_url']}
-    return PDF_VOICES
+    voices={}
+    for v in picked:
+        name,_,about=str(v.get('name') or '').partition(' - '); labels=v.get('labels') or {}
+        voices[v['voice_id']]={'id':v['voice_id'],'name':name.strip() or 'Voice','about':about.strip(),'gender':labels.get('gender') or '','accent':labels.get('accent') or '','preview':v['preview_url']}
+    PDF_VOICES[language]=voices
+    return voices
 
 @app.get('/api/pdf/voices')
-def pdf_voice_list():
-    try: voices=pdf_voices()
+def pdf_voice_list(language:str='en'):
+    language=import_language(language)
+    try: voices=pdf_voices(language, refresh=True)
     except ValueError as e: raise HTTPException(502,str(e))
-    if not voices: raise HTTPException(404,'No English voices were found in your ElevenLabs account. Add some to your voices, then try again.')
+    if not voices: raise HTTPException(404,no_pdf_voices(language))
     return [{k:v[k] for k in ('id','name','about','gender','accent')} for v in voices.values()]
 
 @app.get('/api/pdf/voices/{vid}/preview')
-def pdf_voice_preview(vid:str):
-    try: voice=pdf_voices().get(vid)
+def pdf_voice_preview(vid:str, language:str='en'):
+    language=import_language(language)
+    try: voice=pdf_voices(language).get(vid)
     except ValueError as e: raise HTTPException(502,str(e))
     if not voice: raise HTTPException(404,'Choose one of the listed voices.')
     if vid not in PDF_PREVIEWS:
@@ -439,7 +456,8 @@ def pdf_voice_preview(vid:str):
     return Response(PDF_PREVIEWS[vid],media_type='audio/mpeg')
 
 @app.post('/api/pdf')
-async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('')):
+async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form(''), language:str=Form('en')):
+    language=import_language(language)
     lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
     source=path/'upload.pdf'; size=0
     with source.open('wb') as out:
@@ -455,8 +473,8 @@ async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('
             text=pdf_text(source); chunks=[]
             while text: k=text_cut(text,2500); chunks.append(text[:k].strip()); text=text[k:].lstrip()
             jobs[jid]['message']='Choosing a voice…'
-            voices=pdf_voices()
-            if not voices: raise ValueError('No English voices were found in your ElevenLabs account. Add some to your voices, then try again.')
+            voices=pdf_voices(language)
+            if not voices: raise ValueError(no_pdf_voices(language))
             voice=voices.get(voice_id) if voice_id else random.choice([v for v in voices.values() if v['gender']=='male'] or list(voices.values()))
             if not voice: raise ValueError('That voice is no longer in your ElevenLabs list. Choose another one and try again.')
             name=voice['name']
@@ -476,7 +494,7 @@ async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('
                 except (KeyError,TypeError): timed=False
                 audio.append(y); offset+=len(y)/16000
             wavfile.write(path/'audio.wav',16000,(np.clip(np.concatenate(audio),-1,1)*32767).astype(np.int16))
-            return finish_import(lid,title or Path(file.filename or 'My practice').stem,f'PDF, read by {name} (ElevenLabs)',jid,segments if timed else None)
+            return finish_import(lid,title or Path(file.filename or 'My practice').stem,f'PDF, read by {name} (ElevenLabs)',jid,language,segments if timed else None)
         finally: source.unlink(missing_ok=True)
     return job_start(action)
 
@@ -486,9 +504,10 @@ def resplit(lid:str):
     def action(jid):
         path=folder(lid)
         jobs[jid]['message']='Finding new phrases… Long sessions can take a few minutes.'
-        phrases=make_phrases(transcribe(path/'audio.wav'), load_audio(path/'audio.wav'))
-        if not phrases: raise ValueError('No clear English speech found, so the current phrases were kept.')
-        lesson=read_lesson(lid); lesson['phrases']=phrases
+        lesson=read_lesson(lid); language=lesson.get('language','en')
+        phrases=make_phrases(transcribe(path/'audio.wav', language), load_audio(path/'audio.wav'))
+        if not phrases: raise ValueError(f'No clear {LANGUAGES[language]} speech found, so the current phrases were kept.')
+        lesson['phrases']=phrases
         save_lesson(lesson)
         return lid
     return job_start(action)
@@ -506,7 +525,7 @@ async def edit(lid:str,index:int,request:Request):
     save_lesson(lesson)
     return lesson
 
-def words(text): return re.findall(r"[a-z]+(?:'[a-z]+)?",text.lower().replace('’',"'"))
+def words(text): return re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)*", unicodedata.normalize('NFC',text).lower().replace('’',"'"))
 
 def align(ref,hyp):
     n,m=len(ref),len(hyp); dp=np.zeros((n+1,m+1),dtype=int)
@@ -590,7 +609,7 @@ async def record(lid:str,index:int,request:Request,speed:float=1.0):
             take=load_audio(wav); phrase=lesson['phrases'][index]
             source=load_audio(path/'audio.wav'); ref=source[int(phrase['start']*16000):int(phrase['end']*16000)]
             if len(take)>16000*35: raise ValueError('Keep each take under 35 seconds.')
-            heard=' '.join(s.text.strip() for s in transcribe(wav))
+            heard=' '.join(s.text.strip() for s in transcribe(wav, lesson.get('language','en')))
             result=compare(ref,take,phrase['text'],heard,speed)
             result.update(id=tid,audio=f'/api/take/{lid}/{tid}')
             current=read_lesson(lid); p=current['phrases'][index]
@@ -642,7 +661,7 @@ def delete(lid:str):
     read_lesson(lid); shutil.rmtree(folder(lid)); return {'ok':True}
 
 @app.get('/api/status')
-def status(): return JSONResponse({'local':True,'modelReady':model is not None,'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists())},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})
+def status(): return JSONResponse({'local':True,'modelReady':bool(models),'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists())},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})
 
 if __name__=='__main__':
     os.environ['PATH']='/opt/homebrew/bin:'+os.environ.get('PATH','')

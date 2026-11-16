@@ -253,7 +253,7 @@ struct LibraryView: View {
                 Text("Pick up a session, or bring in a new voice to practise with.").foregroundStyle(.secondary)
             }
             HStack(spacing: 12) {
-                tile("Import from YouTube", "Paste a link to an English video", "play.fill", "youtube") { s.importUpload = false; s.showImport = true }
+                tile("Import from YouTube", "Paste a link to a video", "play.fill", "youtube") { s.importUpload = false; s.showImport = true }
                 tile("Upload a file", "Audio, video or a PDF from your Mac", "arrow.up", "upload") { s.importUpload = true; s.showImport = true }
                 tile("Try the sample", "A short guided example", "sparkles", "sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.disabled(s.sampleId == nil)
             }
@@ -316,7 +316,7 @@ struct EmptyStudio: View {
         VStack(spacing: 22) {
             Orb(seed: "welcome", size: 84)
             VStack(spacing: 10) {
-                Text("Practise speaking English,\none phrase at a time.").font(.system(size: 28, weight: .semibold)).tracking(-0.6).multilineTextAlignment(.center)
+                Text("Practise English or French,\none phrase at a time.").font(.system(size: 28, weight: .semibold)).tracking(-0.6).multilineTextAlignment(.center)
                 Text("Bring in a clip of a speaker you like. Shadow Studio splits it into short phrases you can listen to, repeat and compare.").foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 470)
             }
             HStack(spacing: 10) {
@@ -393,7 +393,7 @@ struct PracticePanel: View {
                 PracticeSentence(phrase: phrase)
             }
             controls
-            MouthGuide(phrase: phrase)
+            if s.lesson?.language != "fr" { MouthGuide(phrase: phrase) }
             if phrase.latest != nil { comparison }
             Rectangle().fill(Color.line).frame(height: 1)
             if phrase.latest != nil { NextStepView(phrase: phrase) }
@@ -466,7 +466,7 @@ struct PracticePanel: View {
 struct PracticeSentence: View {
     @EnvironmentObject var s: Store
     let phrase: Phrase
-    static let tokenPattern = try! NSRegularExpression(pattern: "[a-z]+(?:['’][a-z]+)?", options: .caseInsensitive)
+    static let tokenPattern = try! NSRegularExpression(pattern: "\\p{L}[\\p{L}\\p{M}]*(?:[\'’]\\p{L}[\\p{L}\\p{M}]*)*")
     var body: some View {
         TimelineView(.animation(minimumInterval: 0.05, paused: !s.isPlaying)) { _ in
             let head = s.isPlaying ? (s.original?.currentTime ?? phrase.start) - phrase.start : nil
@@ -800,7 +800,7 @@ struct ImportSheet: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("New practice session").font(.system(size: 20, weight: .semibold)).tracking(-0.3)
-                    muted("Choose clear English speech from one speaker. Short clips with little background music work best.").fixedSize(horizontal: false, vertical: true)
+                    muted("Choose clear speech from one speaker. Short clips with little background music work best.").fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 Button { s.showImport = false } label: { Image(systemName: "xmark") }.buttonStyle(RoundStyle(size: 26)).keyboardShortcut(.cancelAction)
@@ -812,7 +812,7 @@ struct ImportSheet: View {
                         Image(systemName: s.importFile == nil ? "arrow.up.circle" : "doc.fill").font(.system(size: 22, weight: .light)).foregroundStyle(.secondary)
                         Text(s.importFile?.lastPathComponent ?? "Click to choose, or drop a file here").font(.system(size: 13, weight: .medium)).lineLimit(1)
                         muted("MP3, WAV, M4A, MP4, WebM · up to 150 MB · up to 30 minutes")
-                        muted("Or a PDF with selectable English text, read aloud by an ElevenLabs voice you choose")
+                        muted("Or a PDF with selectable English or French text, read aloud by an ElevenLabs voice you choose")
                     }.frame(maxWidth: .infinity).padding(.vertical, 26)
                         .background(RoundedRectangle(cornerRadius: 12).fill(dropping ? Color.selected : Color.subtle))
                         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5])).foregroundStyle(Color.line))
@@ -831,6 +831,10 @@ struct ImportSheet: View {
                     muted("Up to 30 minutes. Import content you have permission to use.")
                 }
             }
+            Picker("Lesson language", selection: $s.importLanguage) {
+                Text("English").tag("en")
+                Text("French").tag("fr")
+            }.pickerStyle(.segmented)
             if s.importUpload && s.importFile?.pathExtension.lowercased() == "pdf" { PDFVoicePicker() }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "lock.fill").font(.system(size: 10)).foregroundStyle(.secondary).padding(.top, 2)
@@ -875,14 +879,15 @@ struct PDFVoicePicker: View {
                             if s.pdfVoice == v.id { Image(systemName: "checkmark.circle.fill").foregroundStyle(.secondary) }
                         }
                         .padding(8).background(RoundedRectangle(cornerRadius: 10).fill(s.pdfVoice == v.id ? Color.selected : Color.subtle))
-                        .contentShape(Rectangle()).onTapGesture { s.pdfVoice = v.id }
+                        .contentShape(Rectangle()).onTapGesture { s.selectPDFVoice(v.id) }
                         .accessibilityElement(children: .contain)
                     }
                 }
                 muted("Samples are free to play. Only the final reading uses your ElevenLabs credits.")
             }
         }
-        .task { if s.pdfVoices.isEmpty { await s.loadPDFVoices() } }
+        .task(id: s.importLanguage) { await s.loadPDFVoices() }
+        .onDisappear { s.stopSample() }
     }
 }
 
