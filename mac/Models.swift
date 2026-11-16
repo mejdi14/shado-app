@@ -6,12 +6,15 @@ struct PhraseRevision: Codable { let id: String; let start: Double; let end: Dou
 struct TakeResult: Codable, Identifiable {
     let id: String; let audio: String; let accuracy: Int; let rhythm: Int; let intonation: Int?
     let words: [Mark]; let curves: Curves; let tips: [String]; let playbackSpeed: Double?; let durationRatio: Double?
-    let created: Double?; let phraseRevision: PhraseRevision?; let legacy: Bool?
+    let created: Double?; let phraseRevision: PhraseRevision?; let legacy: Bool?; let recordedSeconds: Double?
 }
 struct Word: Codable { let start: Double; let end: Double; let word: String }
 struct Phrase: Codable { var start: Double; var end: Double; var text: String; var words: [Word]?; var practised: Bool?; var latest: TakeResult?; var takes: Int?; var revision: String? }
 struct Lesson: Codable { let id: String; var title: String; let source: String; let duration: Double; var phrases: [Phrase]; let sample: Bool?; let language: String?; let takeHistory: [TakeResult]? }
-struct LibraryItem: Codable, Identifiable { let id: String; let title: String; let source: String; let duration: Double; let sample: Bool; let count: Int; let practised: Int; let language: String? }
+struct LibraryItem: Codable, Identifiable {
+    let id: String; let title: String; let source: String; let duration: Double; let sample: Bool; let count: Int; let practised: Int; let language: String?
+    let lastPractised: Double?; let recordedSeconds: Double?; let timedTakes: Int?; let savedTakes: Int?
+}
 struct EngineStatus: Decodable {
     let local: Bool
     let modelReady: Bool?

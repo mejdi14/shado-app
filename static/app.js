@@ -47,6 +47,21 @@ function clearMissingLesson(id){
   toast('That session is no longer in your library. Choose another session or add a voice.');
 }
 let libraryItems=[];
+const moreRecentFirst=(a,b)=>(b.lastPractised??0)-(a.lastPractised??0);
+function renderPracticeProgress(){
+  const sum=key=>libraryItems.reduce((total,item)=>total+(item[key]??0),0);
+  const timed=sum('timedTakes'),saved=sum('savedTakes'),seconds=sum('recordedSeconds');
+  $('#completedPhrases').textContent=`${sum('practised')} of ${sum('count')} current phrases`;
+  $('#recordedPracticeTime').textContent=timed===0?'Unavailable':seconds<1?'Under 1 second':`${fmt(seconds)} (min:sec)`;
+  $('#practiceTimeCoverage').textContent=(saved?`${timed} of ${saved} linked takes have a recorded duration. `:'')+'Time counts takes saved with this version. Some older takes may be missing from history.';
+  const recent=libraryItems.filter(l=>l.lastPractised!=null).sort(moreRecentFirst).slice(0,5);
+  const dateFormat=new Intl.DateTimeFormat(undefined,{dateStyle:'medium'});
+  $('#noRecentLessons').hidden=!!recent.length;
+  $('#recentLessons').innerHTML=recent.map(l=>`<li><button class="button quiet" data-lesson="${esc(l.id)}"><span>${esc(l.title)}</span><small>${esc(dateFormat.format(l.lastPractised*1000))}</small></button></li>`).join('');
+  $$('#recentLessons [data-lesson]').forEach(b=>b.onclick=openLibrarySession);
+  $('#practiceProgress').hidden=false;
+}
+const openLibrarySession=guarded(async e=>{if(await loadLesson(e.currentTarget.dataset.lesson))showView('studio')});
 function renderLibrary(){
   const query=$('#librarySearch').value.trim().toLocaleLowerCase(),language=$('#libraryLanguage').value,progress=$('#libraryProgress').value,sort=$('#librarySort').value;
   const ratio=l=>l.practised/Math.max(1,l.count);
@@ -54,6 +69,7 @@ function renderLibrary(){
     const status=l.practised===0?'new':l.count>0&&l.practised>=l.count?'complete':'started';
     return l.title.toLocaleLowerCase().includes(query)&&(language==='all'||language===(l.language==='fr'?'fr':'en'))&&(progress==='all'||progress===status);
   });
+  if(sort==='recent')items.sort(moreRecentFirst);
   if(sort==='title')items.sort((a,b)=>a.title.localeCompare(b.title,undefined,{sensitivity:'base'}));
   if(sort==='progress')items.sort((a,b)=>ratio(b)-ratio(a));
   $('#libraryControls').hidden=!libraryItems.length;
@@ -62,9 +78,9 @@ function renderLibrary(){
   message.textContent=items.length?'':libraryItems.length?'No sessions match. Change your search or filters, or choose Reset.':'Your library is ready for its first voice. Add a clip to get started.';
   message.hidden=!!items.length;
   $('#libraryGrid').innerHTML=items.map(l=>`<button class="library-card card" data-lesson="${esc(l.id)}"><span>${l.sample?'GUIDED SAMPLE':(l.language==='fr'?'FRENCH':'ENGLISH')+' / '+(l.source.startsWith('http')?'YOUTUBE':l.source.startsWith('PDF,')?'PDF':'UPLOADED AUDIO')}</span><h3>${esc(l.title)}</h3><p>${l.count} phrases · ${fmt(l.duration)}<br>${l.practised}/${l.count} practised <span>↗</span></p></button>`).join('');
-  $$('#libraryGrid [data-lesson]').forEach(b=>b.onclick=guarded(async()=>{if(await loadLesson(b.dataset.lesson))showView('studio')}));
+  $$('#libraryGrid [data-lesson]').forEach(b=>b.onclick=openLibrarySession);
 }
-async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#librarySample').hidden=!sampleId;libraryItems=list;renderLibrary();if(current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
+async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#librarySample').hidden=!sampleId;libraryItems=list;renderLibrary();renderPracticeProgress();if(current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
 $('#libraryControls').onsubmit=e=>e.preventDefault();
 $('#librarySearch').oninput=renderLibrary;
 for(const selector of ['#libraryLanguage','#libraryProgress','#librarySort'])$(selector).onchange=renderLibrary;

@@ -270,6 +270,10 @@ struct LibraryView: View {
     @State private var progress = "all"
     @State private var order = "newest"
 
+    private func mostRecentFirst(_ sessions: [LibraryItem]) -> [LibraryItem] {
+        sessions.sorted { ($0.lastPractised ?? 0) > ($1.lastPractised ?? 0) }
+    }
+
     private var visibleSessions: [LibraryItem] {
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matches = s.library.filter { item in
@@ -280,6 +284,8 @@ struct LibraryView: View {
                 && (progress == "all" || progress == status)
         }
         switch order {
+        case "recent":
+            return mostRecentFirst(matches)
         case "title":
             return matches.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         case "progress":
@@ -308,6 +314,7 @@ struct LibraryView: View {
                 }
                 Picker("Sort by", selection: $order) {
                     Text("Newest added").tag("newest")
+                    Text("Recently practised").tag("recent")
                     Text("Title A–Z").tag("title")
                     Text("Most complete").tag("progress")
                 }
@@ -319,6 +326,48 @@ struct LibraryView: View {
                 }.disabled(query.isEmpty && language == "all" && progress == "all" && order == "newest")
             }.pickerStyle(.menu)
         }.padding(.horizontal, 18).padding(.bottom, 14)
+    }
+
+    private var practiceProgress: some View {
+        let completed = s.library.reduce(0) { $0 + $1.practised }
+        let total = s.library.reduce(0) { $0 + $1.count }
+        let timed = s.library.reduce(0) { $0 + ($1.timedTakes ?? 0) }
+        let saved = s.library.reduce(0) { $0 + ($1.savedTakes ?? 0) }
+        let seconds = s.library.reduce(0.0) { $0 + ($1.recordedSeconds ?? 0) }
+        let recent = mostRecentFirst(s.library.filter { $0.lastPractised != nil }).prefix(5)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Practice progress").font(.system(size: 15, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+            HStack(alignment: .top, spacing: 32) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Phrases completed").font(.system(size: 13, weight: .medium))
+                    muted("\(completed) of \(total) current phrases")
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Recorded practice time").font(.system(size: 13, weight: .medium))
+                    muted(timed == 0 ? "Unavailable" : seconds < 1 ? "Under 1 second" : "\(fmt(seconds)) (min:sec)")
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                if saved > 0 { muted("\(timed) of \(saved) linked takes have a recorded duration.") }
+                muted("Time counts takes saved with this version. Some older takes may be missing from history.")
+            }.fixedSize(horizontal: false, vertical: true)
+            Text("Recent lessons").font(.system(size: 13, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+            if recent.isEmpty { muted("No dated takes yet.") }
+            ForEach(recent) { item in
+                if let date = item.lastPractised {
+                    Button { Task { await s.openLesson(item.id) } } label: {
+                        HStack {
+                            Text(item.title).lineLimit(1)
+                            Spacer()
+                            Text(Date(timeIntervalSince1970: date), format: .dateTime.year().month(.abbreviated).day())
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                    }.buttonStyle(RowStyle(pad: 7)).disabled(s.locked)
+                }
+            }
+        }.padding(18).frame(maxWidth: .infinity, alignment: .leading).panel(16)
     }
 
     var body: some View {
@@ -338,6 +387,7 @@ struct LibraryView: View {
                 }.disabled(s.locked)
                 if s.sampleId == nil && !s.locked { muted(missingSampleHint) }
             }
+            practiceProgress
             VStack(spacing: 0) {
                 HStack { Text("Sessions").font(.system(size: 15, weight: .semibold)); Spacer(); muted("\(sessions.count)") }.padding(.horizontal, 18).padding(.vertical, 14)
                 if !s.library.isEmpty { controls }

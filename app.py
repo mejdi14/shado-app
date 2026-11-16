@@ -94,11 +94,13 @@ def archive_phrase(lesson, index):
     if old:=legacy_take(lesson,index):
         lesson.setdefault('takeHistory',[]).append(old)
 
+def lesson_history(lesson):
+    return lesson.get('takeHistory',[])+[old for i in range(len(lesson['phrases'])) if (old:=legacy_take(lesson,i))]
+
 def public_lesson(lesson):
-    history=lesson.get('takeHistory',[])+[old for i in range(len(lesson['phrases'])) if (old:=legacy_take(lesson,i))]
     return {k:v for k,v in lesson.items() if k!='archivedRevisions'} | {
         'phrases':[p | {'revision':phrase_revision(lesson,i)['id']} for i,p in enumerate(lesson['phrases'])],
-        'takeHistory':sorted(history,key=lambda r:r.get('created') or 0,reverse=True),
+        'takeHistory':sorted(lesson_history(lesson),key=lambda r:r.get('created') or 0,reverse=True),
     }
 
 def run(cmd, timeout=180):
@@ -288,13 +290,23 @@ def finish_import(lid, title, source, jid, language, segments=None):
     save_lesson(lesson)
     return lid
 
+def practice_summary(lesson):
+    history=lesson_history(lesson)
+    dates=[]; durations=[]
+    for take in history:
+        date=take.get('created'); duration=take.get('recordedSeconds')
+        if type(date) in (int,float) and 0<date and math.isfinite(date): dates.append(date)
+        if type(duration) in (int,float) and 0<duration<=35: durations.append(duration)
+    return {'lastPractised':max(dates,default=None),'recordedSeconds':math.fsum(durations),
+        'timedTakes':len(durations),'savedTakes':len(history)}
+
 @app.get('/api/library')
 def library():
     lessons=[]
     for p in DATA.glob('*/lesson.json'):
         try:
-            l=json.loads(p.read_text()); lessons.append({k:l[k] for k in ['id','title','source','created','duration','sample']} | {'language':l.get('language','en'),'count':len(l['phrases']),'practised':sum(bool(x.get('practised')) for x in l['phrases'])})
-        except (ValueError,KeyError): pass
+            l=json.loads(p.read_text()); lessons.append({k:l[k] for k in ['id','title','source','created','duration','sample']} | {'language':l.get('language','en'),'count':len(l['phrases']),'practised':sum(bool(x.get('practised')) for x in l['phrases'])} | practice_summary(l))
+        except (FileNotFoundError,ValueError,KeyError): pass
     return sorted(lessons,key=lambda x:x['created'],reverse=True)
 
 def training_progress():
@@ -661,7 +673,7 @@ async def record(lid:str,index:int,request:Request,speed:float=1.0,revision:str|
             if len(take)>16000*35: raise ValueError('Keep each take under 35 seconds.')
             heard=' '.join(s.text.strip() for s in transcribe(pending, lesson.get('language','en')))
             result=compare(ref,take,phrase['text'],heard,speed)
-            result.update(id=tid,audio=f'/api/take/{lid}/{tid}',created=created,phraseRevision=phrase)
+            result.update(id=tid,audio=f'/api/take/{lid}/{tid}',created=created,phraseRevision=phrase,recordedSeconds=len(take)/16000)
             with file_lock:
                 current=read_lesson(lid)
                 history=current.setdefault('takeHistory',[])

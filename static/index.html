@@ -5,11 +5,17 @@
 <main><header><div class="breadcrumb">YOUR WORKSPACE <span>/</span> <b id="pageLabel">Practice studio</b></div><button class="button quiet" id="newTop">＋ Add a voice</button></header>
 <div class="content"><section class="page-intro"><div><div class="eyebrow">LISTEN CLOSELY. MAKE IT YOURS.</div><h1>Find your flow<span>.</span></h1><p>A voice you admire. A phrase at a time. Your own progress.</p></div><span class="language-pill" id="lessonLanguage"><span>EN</span> English practice</span></section>
 <section id="libraryView" hidden><div class="section-title"><h2>Your voice library</h2><button class="button primary" id="addLibrary">＋ Add a voice</button></div><div class="library-actions"><button id="continueLesson" class="button quiet" hidden>Continue</button><button id="librarySample" class="button quiet" hidden>Try the guided sample</button></div>
+<section id="practiceProgress" class="card" aria-labelledby="practiceProgressTitle" hidden>
+<h3 id="practiceProgressTitle">Practice progress</h3>
+<dl><div><dt>Phrases completed</dt><dd id="completedPhrases"></dd></div><div><dt>Recorded practice time</dt><dd id="recordedPracticeTime"></dd></div></dl>
+<p id="practiceTimeCoverage"></p>
+<h4>Recent lessons</h4><p id="noRecentLessons">No dated takes yet.</p><ul id="recentLessons"></ul>
+</section>
 <form id="libraryControls" class="library-controls" role="search" aria-label="Library" hidden>
 <label>Title<input id="librarySearch" type="search" placeholder="Search titles"></label>
 <label>Language<select id="libraryLanguage"><option value="all">All languages</option><option value="en">English</option><option value="fr">French</option></select></label>
 <label>Progress<select id="libraryProgress"><option value="all">All progress</option><option value="new">Not started</option><option value="started">In progress</option><option value="complete">Completed</option></select></label>
-<label>Sort by<select id="librarySort"><option value="newest">Newest added</option><option value="title">Title A–Z</option><option value="progress">Most complete</option></select></label>
+<label>Sort by<select id="librarySort"><option value="newest">Newest added</option><option value="recent">Recently practised</option><option value="title">Title A–Z</option><option value="progress">Most complete</option></select></label>
 <button type="button" id="resetLibrary" class="button quiet">Reset</button>
 </form><p id="libraryMessage" class="empty-library" role="status"></p><div id="libraryGrid" class="library-grid"></div></section>
 <section id="studioView">

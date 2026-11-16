@@ -30,7 +30,9 @@ On Mac, Shadow Studio reopens the last session at its selected phrase and rememb
 
 In the browser, Shadow Studio reopens the last session and remembers the selected phrase for each lesson in that browser. Use **Continue** in Your library to return to the displayed lesson and phrase. If a saved phrase cannot be matched, the session starts at phrase one. Re-splitting also starts at phrase one. If the last session has been deleted, choose a different session from Your library.
 
-On Mac and mobile Home and in the browser library, search session titles and filter by language or phrase progress. Sort by newest added, title, or the share of phrases practised. **Reset** clears your search and filters and restores newest-first sorting.
+On Mac and mobile Home and in the browser library, search session titles and filter by language or phrase progress. Sort by newest added, recently practised, title, or the share of phrases practised. **Recently practised** uses the date of the latest linked take and puts sessions with no dated take last. **Reset** clears your search and filters and restores newest-first sorting.
+
+On Mac Home and in the browser library, **Practice progress** shows how many current phrases have a successful take and lists up to five recently practised sessions. Recorded practice time adds the audio duration of saved takes with duration metadata, including repeat takes and takes for earlier phrase versions. It covers takes saved with this version, and the summary shows how many linked takes have a duration. Older linked takes can still contribute to recency if they have a date. Unlinked older recordings and Voice Training drills are outside the summary.
 
 ## Voice Training (Mac app)
 
