@@ -90,6 +90,8 @@ Restore validates the whole archive and adds each new session as a complete fold
 
 Use content you have permission to import. Links can fail because of YouTube access restrictions, unavailable videos, or changes to its download behaviour. Uploading an audio/video file is the fallback. This app does not request browser cookies or log into your YouTube account. YouTube's official API does not offer general audio extraction; see its [developer policy guide](https://developers.google.com/youtube/terms/developer-policies-guide). The local importer uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), rather than the YouTube API.
 
+Once the engine returns a job ID, refreshing the same browser tab or reopening the Mac, iOS or Android app checks the original import. If the connection drops, open the import form and choose **Check import status**. This checks the job without sending the file or link again. If the engine restarted or the connection dropped before the client received a job ID, check your library for a saved session before importing again.
+
 ## If something needs attention
 
 - If the in-app browser cannot record, open the local address in Safari or Chrome, then grant microphone access.

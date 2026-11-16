@@ -68,6 +68,7 @@ enum PracticeDefaults {
     @Published var stopping = false
     @Published var recordSeconds = 0.0
     @Published var showImport = false
+    @Published private(set) var pendingImportJob: String?
     @Published var showEdit = false
     @Published var showDelete = false
     @Published var showResplit = false
@@ -105,7 +106,18 @@ enum PracticeDefaults {
     init(api: API) {
         self.api = api
         super.init()
+        let saved = UserDefaults.standard.string(forKey: importJobKey)
+        if let saved, saved.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil {
+            pendingImportJob = saved
+        }
         applyPracticeDefaults()
+    }
+
+    private var importJobKey: String { "shadow-import-job-" + base.absoluteString }
+
+    private func saveImportJob(_ id: String?) {
+        pendingImportJob = id
+        UserDefaults.standard.set(id, forKey: importJobKey)
     }
 
     private func applyPracticeDefaults() {
@@ -132,6 +144,10 @@ enum PracticeDefaults {
         guard !locked else { return }
         navigating = true
         defer { navigating = false }
+        if let id = pendingImportJob {
+            await recoverImport(id)
+            if pendingImportJob != nil || lesson != nil { return }
+        }
         await guarded {
             try await refreshLibrary()
             if let last = UserDefaults.standard.string(forKey: "shadow-lesson"), library.contains(where: { $0.id == last }) { try await loadLesson(last) }
@@ -442,12 +458,20 @@ enum PracticeDefaults {
 
     // MARK: Jobs, import, edit, delete
 
-    func waitJob(_ id: String, _ title: String) async throws -> String {
+    func waitJob(_ id: String, _ title: String, importing: Bool = false) async throws -> String {
         busy = Busy(title: title, message: busy?.message ?? "Preparing audio…")
         while true {
-            let j = try await api.get(Job.self, "/api/jobs/" + id)
+            let j: Job
+            do { j = try await api.get(Job.self, "/api/jobs/" + id) }
+            catch let error as AppError where importing && error.statusCode == 404 {
+                saveImportJob(nil)
+                throw AppError(message: "The engine no longer has this import job. It may have restarted. Check your library before importing again.")
+            }
             busy?.message = j.message ?? "Finishing up…"
-            if j.state == "error" { throw AppError(message: j.message ?? "Processing failed. Please try again.") }
+            if j.state == "error" {
+                if importing { saveImportJob(nil) }
+                throw AppError(message: j.message ?? "Processing failed. Please try again.")
+            }
             if j.state == "done", let lid = j.lessonId { return lid }
             try await Task.sleep(nanoseconds: 900_000_000)
         }
@@ -499,6 +523,7 @@ enum PracticeDefaults {
     }
 
     func submitImport() async {
+        guard !locked, pendingImportJob == nil else { return }
         let url = importURL.trimmingCharacters(in: .whitespacesAndNewlines)
         importError = ""
         if importFile == nil && url.isEmpty { importError = "Paste a YouTube link or choose a file."; return }
@@ -507,15 +532,50 @@ enum PracticeDefaults {
         showImport = false; stopSample()
         defer { busy = nil }
         do {
-            busy = Busy(title: "Preparing your practice", message: "Preparing audio…")
+            busy = Busy(title: "Starting your import", message: importFile == nil ? "Sending the YouTube link to the local engine…" : "Preparing your file for upload…")
             let j: JobStart
             if let f = importFile { j = try await uploadFile(f) }
             else { j = try await api.get(JobStart.self, "/api/import", method: "POST", json: ["url": url, "language": importLanguage]) }
-            let lid = try await waitJob(j.jobId, "Finding your phrases")
-            try await loadLesson(lid); showTraining = false; showLibrary = false
+            guard j.jobId.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else {
+                throw AppError(message: "The engine’s reply did not include an import job ID.")
+            }
+            saveImportJob(j.jobId)
+            await recoverImport(j.jobId)
+        } catch {
+            importError = error.localizedDescription
+            if (error as? AppError)?.statusCode == nil { importError += " Check your library before importing again." }
+            showImport = true
+        }
+    }
+
+    func checkImportStatus() async {
+        guard !locked, let id = pendingImportJob else { return }
+        await recoverImport(id)
+    }
+
+    private func recoverImport(_ id: String) async {
+        showImport = false; stopSample(); stopPlayback()
+        busy = Busy(title: "Importing your practice session", message: "Checking import status…")
+        defer { busy = nil }
+        do {
+            let lid = try await waitJob(id, "Importing your practice session", importing: true)
+            busy?.message = "Opening your saved session…"
+            do { try await loadLesson(lid) }
+            catch let error as AppError where error.statusCode == 404 {
+                saveImportJob(nil)
+                throw AppError(message: "The import finished, but the session is no longer in your library.")
+            }
+            saveImportJob(nil)
+            showTraining = false; showLibrary = false
             importURL = ""; importFile = nil
+            importError = ""
             show("Your practice session is ready.")
-        } catch { importError = error.localizedDescription; showImport = true }
+        } catch {
+            guard !Task.isCancelled else { return }
+            importError = pendingImportJob == nil ? error.localizedDescription
+                : "Could not check the import. Make sure the local engine is running, then choose Check import status."
+            showImport = true
+        }
     }
 
     func uploadFile(_ file: URL) async throws -> JobStart {
@@ -533,6 +593,7 @@ enum PracticeDefaults {
         out.write(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\n\(importLanguage)".utf8))
         if file.pathExtension.lowercased() == "pdf", !pdfVoice.isEmpty { out.write(Data("\r\n--\(boundary)\r\nContent-Disposition: form-data; name=\"voice_id\"\r\n\r\n\(pdfVoice)".utf8)) }
         out.write(Data("\r\n--\(boundary)--\r\n".utf8)); try out.close()
+        busy?.message = "Sending your file to the local engine…"
         return try await api.get(JobStart.self, file.pathExtension.lowercased() == "pdf" ? "/api/pdf" : "/api/upload", method: "POST", contentType: "multipart/form-data; boundary=\(boundary)", file: temp)
     }
 

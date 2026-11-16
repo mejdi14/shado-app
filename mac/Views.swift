@@ -1075,7 +1075,16 @@ struct ImportSheet: View {
                 muted(s.importUpload && s.importFile?.pathExtension.lowercased() == "pdf" ? "The text of this PDF (the first 20,000 characters) is sent to ElevenLabs to create the voice, using your ElevenLabs account and credits. Your recordings stay on your Mac." : "Processing and recordings stay on your Mac. Importing a link connects to YouTube; the first transcription downloads a speech model.").fixedSize(horizontal: false, vertical: true)
             }
             if !s.importError.isEmpty { Text(s.importError).foregroundStyle(Color.rec).font(.system(size: 12.5)) }
-            HStack { Spacer(); Button("Cancel") { s.showImport = false }.buttonStyle(PillStyle()); Button("Create session") { create() }.buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction) }
+            HStack {
+                Spacer()
+                Button("Close") { s.showImport = false }.buttonStyle(PillStyle())
+                if s.pendingImportJob != nil {
+                    Button("Check import status") { Task { await s.checkImportStatus() } }
+                        .buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Create session") { create() }.buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction)
+                }
+            }
         }
         .padding(24).frame(width: 520).background(Color.surface)
         .onDisappear { s.stopSample() }

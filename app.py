@@ -137,11 +137,13 @@ def import_language(language):
     if language not in ('en','fr'): raise HTTPException(400,'Choose English or French for this session.')
     return language
 
-def transcribe(path, language):
+def transcribe(path, language, jid=None):
     with model_lock:
         if language not in models:
+            if jid: jobs[jid]['message']='Loading the speech model… First use may download about 150 MB.'
             from faster_whisper import WhisperModel
             models[language] = WhisperModel('base.en' if language=='en' else 'base', device='cpu', compute_type='int8', download_root=str(DATA/'models'))
+        if jid: jobs[jid]['message']='Transcribing speech on your Mac…'
         segments, info = models[language].transcribe(str(path), language=language, word_timestamps=True, vad_filter=True, condition_on_previous_text=False, beam_size=5)
         return list(segments)
 
@@ -272,9 +274,9 @@ def make_phrases(segments, audio):
         phrases.append({'start':round(start,3),'end':round(max(end,start+.1),3),'text':''.join(w['word'] for w in ws).strip(),'words':ws,'practised':False})
     return phrases
 
-def job_start(action):
+def job_start(action, message='Preparing audio…'):
     jid=uuid.uuid4().hex
-    with file_lock: jobs[jid]={'state':'working','message':'Preparing audio…'}
+    with file_lock: jobs[jid]={'state':'working','message':message}
     def work():
         try:
             lid=action(jid)
@@ -293,10 +295,12 @@ def finish_import(lid, title, source, jid, language, segments=None):
     path=folder(lid)
     audio=load_audio(path/'audio.wav')
     if len(audio)>16000*1800: raise ValueError('Choose a video or file under 30 minutes for focused practice.')
-    jobs[jid]['message']='Finding phrases…'+('' if segments else ' The first import downloads a speech model (about 150 MB).')
-    phrases=make_phrases(segments or transcribe(path/'audio.wav', language), audio)
+    segments=segments or transcribe(path/'audio.wav', language, jid)
+    jobs[jid]['message']='Splitting speech into practice phrases…'
+    phrases=make_phrases(segments, audio)
     if not phrases: raise ValueError(f'No clear {LANGUAGES[language]} speech found. Try a clip with a single speaker and little music.')
     lesson={'id':lid,'title':title[:160],'source':source,'created':time.time(),'duration':round(len(audio)/16000,2),'phrases':phrases,'sample':False,'language':language}
+    jobs[jid]['message']='Saving your practice session…'
     save_lesson(lesson)
     return lid
 
@@ -760,8 +764,11 @@ def audio(lid:str):
 
 @app.get('/api/jobs/{jid}')
 def job(jid:str):
-    if jid not in jobs: raise HTTPException(404,'Job not found')
-    return {k:v for k,v in jobs[jid].items() if k!='cleanup'}
+    current=jobs.get(jid)
+    if current is None: raise HTTPException(404,'Job not found')
+    snapshot=current.copy()
+    snapshot.pop('cleanup',None)
+    return snapshot
 
 @app.post('/api/import')
 async def youtube(request:Request):
@@ -780,25 +787,33 @@ async def youtube(request:Request):
         import yt_dlp
         lid,path=new_lesson_folder()
         jobs[jid]['cleanup']=str(path)
-        jobs[jid]['message']='Importing YouTube audio…'
+        jobs[jid]['message']='Checking the YouTube video…'
+        rejection=None
         def limit(info, *, incomplete=False):
-            if info.get('is_live'): return 'Live streams are not supported.'
-            if (info.get('duration') or 0)>1800: return 'Choose a video under 30 minutes.'
+            nonlocal rejection
+            rejection=None
+            if info.get('is_live'): rejection='Live streams are not supported.'
+            elif (info.get('duration') or 0)>1800: rejection='Choose a video under 30 minutes.'
+            return rejection
+        def download_progress(progress):
+            if progress['status']=='downloading': jobs[jid]['message']='Downloading YouTube audio…'
         node='/Users/mejdihafiene/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node'
         opts={'format':'bestaudio/best','outtmpl':str(path/'source.%(ext)s'),'noplaylist':True,'quiet':True,'no_warnings':True,'socket_timeout':25,'retries':1,'max_filesize':150*1024*1024,'match_filter':limit}
         if Path(node).exists(): opts['js_runtimes']={'node':{'path':node}}
+        opts['progress_hooks']=[download_progress]
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info=ydl.extract_info(canonical,download=True)
-                if not info: raise ValueError('This video could not be imported. Choose one under 30 minutes.')
+                if not info: raise RuntimeError('No YouTube audio returned')
                 src=Path(ydl.prepare_filename(info))
+            jobs[jid]['message']='Converting YouTube audio…'
             convert(src,path/'audio.wav')
             src.unlink(missing_ok=True)
         except Exception as exc:
-            if isinstance(exc,ValueError): raise
-            raise ValueError('YouTube blocked this import or the video is unavailable. Try another link, or upload an audio/video file you can use.')
+            reason=rejection or 'YouTube could not provide usable audio within the 150 MB limit.'
+            raise ValueError(reason+' Try another link, or upload an audio/video file you can use.') from exc
         return finish_import(lid,info.get('title','YouTube practice'),canonical,jid,language)
-    return job_start(action)
+    return job_start(action,'Waiting for the engine to start your import…')
 
 @app.post('/api/upload')
 async def upload(file:UploadFile=File(...), title:str=Form(''), language:str=Form('en')):
@@ -814,10 +829,11 @@ async def upload(file:UploadFile=File(...), title:str=Form(''), language:str=For
     def action(jid):
         jobs[jid]['cleanup']=str(path)
         try:
+            jobs[jid]['message']='Converting your file on your Mac…'
             convert(source,path/'audio.wav',duration=1801)
             return finish_import(lid,title or Path(file.filename or 'My practice').stem,'Uploaded file',jid,language)
         finally: source.unlink(missing_ok=True)
-    return job_start(action)
+    return job_start(action,'Waiting for the engine to start your import…')
 
 PDF_CHARS=20000
 ELEVEN_FAILED='ElevenLabs could not create the voice. Check your connection, that you are signed in (run “elevenlabs auth login” in Terminal) and that you have credits left, then try again.'
@@ -952,7 +968,7 @@ async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('
             wavfile.write(path/'audio.wav',16000,(np.clip(np.concatenate(audio),-1,1)*32767).astype(np.int16))
             return finish_import(lid,title or Path(file.filename or 'My practice').stem,f'PDF, read by {name} (ElevenLabs)',jid,language,segments if timed else None)
         finally: source.unlink(missing_ok=True)
-    return job_start(action)
+    return job_start(action,'Waiting for the engine to start your import…')
 
 @app.post('/api/resplit/{lid}')
 def resplit(lid:str):

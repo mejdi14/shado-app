@@ -11,7 +11,23 @@ async function api(path,options){return (await apiResponse(path,options)).json()
 function json(method,data){return{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}}
 function guarded(fn){return async(...args)=>{try{await fn(...args)}catch(e){toast(e.message)}}}
 function setBusy(value,title='Preparing your practice',message='Preparing audio…'){busy=value;$('#jobOverlay').hidden=!value;$('#jobTitle').textContent=title;$('#jobMessage').textContent=message;$('main').inert=value;$('.sidebar').inert=value}
-async function waitJob(id,title){setBusy(true,title);try{while(true){const j=await api('/api/jobs/'+id);$('#jobMessage').textContent=j.message||'Finishing up…';if(j.state==='error')throw new Error(j.message);if(j.state==='done')return j.lessonId;await new Promise(r=>setTimeout(r,900))}}finally{setBusy(false)}}
+async function waitJob(id,title,importing=false){
+  setBusy(true,title,importing?'Checking import status…':'Preparing audio…');
+  try{
+    while(true){
+      let j;
+      try{j=await api('/api/jobs/'+id)}
+      catch(error){if(importing&&error.status===404){saveImportJob(null);throw new Error(missingImport)}throw error}
+      $('#jobMessage').textContent=j.message||'Finishing up…';
+      if(j.state==='error'){
+        if(importing)saveImportJob(null);
+        throw new Error(j.message||'Processing failed. Please try again.');
+      }
+      if(j.state==='done')return j.lessonId;
+      await new Promise(r=>setTimeout(r,900));
+    }
+  }finally{if(!importing)setBusy(false)}
+}
 const lastLessonKey='shadow-lesson', phraseKey=id=>'shadow-phrase:'+id;
 function readPreference(key){try{return localStorage.getItem(key)}catch{return null}}
 function writePreference(key,value){try{if(value===null)localStorage.removeItem(key);else localStorage.setItem(key,value)}catch{}}
@@ -181,17 +197,79 @@ function setControlsLocked(lock){$$('.mode,.chip,#speed,#prevPhrase,#nextPhrase,
 function resetRecording(){recording=false;stopping=false;starting=false;stopLive();live=null;clearInterval(recordTimer);clearTimeout(autoStop);releaseMic();$('#recordButton').innerHTML='<span class="mic-dot"></span> Record a take';$('#recordButton').classList.remove('recording');$('#recordButton').disabled=false;$('#recordingMeter').hidden=true;setControlsLocked(false);if(lesson)paintWave()}
 function stopRecording(){if(!recording||stopping)return;stopping=true;recording=false;clearInterval(recordTimer);clearTimeout(autoStop);stopPlayback();$('#recordButton').disabled=true;if(recorder?.state==='recording')recorder.stop();else resetRecording()}
 async function finishRecording(blob){const lid=lesson.id,ix=index,p=lesson.phrases[ix];const params=new URLSearchParams({speed:mode==='shadow'?$('#speed').value:1});if(p.revision)params.set('revision',p.revision);try{setBusy(true,'Reviewing your take','Listening to your recording…');const j=await api(`/api/record/${lid}/${ix}?${params}`,{method:'POST',headers:{'Content-Type':blob.type},body:blob});await waitJob(j.jobId,'Reviewing your take');if(await loadLesson(lid)){const latest=lesson.phrases[index]?.latest;toast(!j.takeId||latest?.id===j.takeId?'Your feedback is ready. Listen back, then choose one detail to practise.':'Your recording and feedback are saved in Take history.')}}finally{setBusy(false)}}
-function openImport(){if(recording||starting||stopping||busy)return;$('#importError').textContent='';$('#importDialog').showModal()}
+const importJobKey='shadow-import-job';
+let pendingImport;
+try{pendingImport=sessionStorage.getItem(importJobKey)}catch{}
+if(!/^[0-9a-f]{32}$/.test(pendingImport)&&pendingImport!=='sending')pendingImport=null;
+function saveImportJob(id){
+  pendingImport=id;
+  try{if(id===null)sessionStorage.removeItem(importJobKey);else sessionStorage.setItem(importJobKey,id)}catch{}
+}
+function showImportStatus(message){
+  const canCheck=!!pendingImport&&pendingImport!=='sending';
+  $('#importSubmit').disabled=canCheck;
+  $('#checkImport').hidden=!canCheck;
+  if(message!==undefined)$('#importError').textContent=message;
+  if(!$('#importDialog').open)$('#importDialog').showModal();
+}
+function openImport(){if(recording||starting||stopping||busy)return;showImportStatus()}
+const missingImport='The engine no longer has this import job. It may have restarted. Check your library before importing again.';
+const unconfirmedImport='The engine’s reply was interrupted before this browser got a job ID. Check your library before importing again.';
+async function recoverImport(){
+  const id=pendingImport;
+  if(id==='sending'){showImportStatus(unconfirmedImport);return false}
+  if(!id)return false;
+  stopPlayback();
+  try{
+    const lid=await waitJob(id,'Importing your practice session',true);
+    $('#jobMessage').textContent='Opening your saved session…';
+    const loaded=await loadLesson(lid,true);
+    saveImportJob(null);
+    if(!loaded)throw new Error('The import finished, but the session is no longer in your library.');
+  }catch(error){
+    setBusy(false);
+    showImportStatus(pendingImport?'Could not check the import. Make sure the local engine is running, then choose Check import status.':error.message);
+    return false;
+  }
+  setBusy(false);
+  $('#importForm').reset();$('#fileLabel').textContent='Choose an audio or video file';$('#importError').textContent='';
+  showView('studio');toast('Your practice session is ready. Start by listening to the first phrase.');
+  return true;
+}
+$('#checkImport').onclick=()=>{if(busy)return;$('#importDialog').close();void recoverImport()};
 ['#newTop','#addLibrary','#emptyImport'].forEach(s=>$(s).onclick=openImport);$$('.close-dialog').forEach(b=>b.onclick=()=>b.closest('dialog').close());$('#cancelDelete').onclick=()=>$('#deleteDialog').close();$('#practiceNav').onclick=()=>showView('studio');$('#libraryNav').onclick=guarded(async()=>{await refreshLibrary();showView('library')});$('#continueLesson').onclick=guarded(async()=>{if(lesson?.phrases[index]&&await loadLesson(lesson.id))showView('studio')});$('#sampleButton').onclick=guarded(async()=>{if(sampleId)await loadLesson(sampleId)});$('#prevPhrase').onclick=()=>selectPhrase(index-1);$('#nextPhrase').onclick=()=>selectPhrase(index+1);$('#playOriginal').onclick=guarded(togglePlay);$('#loop').onclick=()=>{looping=!looping;$('#loop').setAttribute('aria-pressed',looping)};$('#hideText').onclick=()=>{concealed=!concealed;$('#phraseText').textContent=lesson.phrases[index].text;applyConceal()};$('#reveal').onclick=()=>{concealed=false;applyConceal()};$$('.mode').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#speed').onchange=()=>original.playbackRate=+$('#speed').value;$('#recordButton').onclick=guarded(async()=>recording?stopRecording():startRecording());$('#playTake').onclick=guarded(async()=>{if(!take.paused){stopPlayback();return}stopPlayback();take.currentTime=0;await take.play()});$('#compareAB').onclick=guarded(async()=>{await playOriginal({once:true,rate:lesson.phrases[index].latest?.playbackSpeed||1,onDone:()=>{take.currentTime=0;take.play().catch(e=>toast(e.message))}})});original.onplay=take.onplay=animateVoice;original.onerror=()=>toast(lesson?.sample?'The guided sample audio could not be loaded. Reopen it from the library or choose Add a voice.':'The audio could not be loaded. Reopen the session from your library.');
 $('#audioFile').onchange=()=>{$('#fileLabel').textContent=$('#audioFile').files[0]?.name||'Choose an audio or video file';if($('#audioFile').files.length)$('#youtubeUrl').value=''};$('#youtubeUrl').oninput=()=>{if($('#youtubeUrl').value){$('#audioFile').value='';$('#fileLabel').textContent='Choose an audio or video file'}};
-$('#importForm').onsubmit=async e=>{e.preventDefault();$('#importError').textContent='';const file=$('#audioFile').files[0],url=$('#youtubeUrl').value.trim(),language=$('#importLanguage').value;if(!file&&!url){$('#importError').textContent='Paste a YouTube link or choose a file.';return}if(file?.size>150*1024*1024){$('#importError').textContent='Choose a file smaller than 150 MB.';return}$('#importDialog').close();try{setBusy(true);let j;if(file){const form=new FormData();form.append('file',file);form.append('language',language);j=await api('/api/upload',{method:'POST',body:form})}else{j=await api('/api/import',json('POST',{url,language}))}const lid=await waitJob(j.jobId,'Finding your phrases');if(!await loadLesson(lid,true))return;showView('studio');$('#importForm').reset();$('#fileLabel').textContent='Choose an audio or video file';toast('Your practice session is ready. Start by listening to the first phrase.')}catch(err){setBusy(false);$('#importError').textContent=err.message;$('#importDialog').showModal()}finally{setBusy(false)}};
+$('#importForm').onsubmit=async e=>{
+  e.preventDefault();
+  if(busy||(pendingImport&&pendingImport!=='sending'))return;
+  $('#importError').textContent='';
+  const file=$('#audioFile').files[0],url=$('#youtubeUrl').value.trim(),language=$('#importLanguage').value;
+  if(!file&&!url){$('#importError').textContent='Paste a YouTube link or choose a file.';return}
+  if(file?.size>150*1024*1024){$('#importError').textContent='Choose a file smaller than 150 MB.';return}
+  $('#importDialog').close();stopPlayback();
+  saveImportJob('sending');
+  setBusy(true,'Starting your import',file?'Sending your file to the local engine…':'Sending the YouTube link to the local engine…');
+  try{
+    let j;
+    if(file){const form=new FormData();form.append('file',file);form.append('language',language);j=await api('/api/upload',{method:'POST',body:form})}
+    else{j=await api('/api/import',json('POST',{url,language}))}
+    if(!/^[0-9a-f]{32}$/.test(j.jobId))throw new Error(unconfirmedImport);
+    saveImportJob(j.jobId);
+  }catch(error){
+    if(error.status>=400&&error.status<500)saveImportJob(null);
+    setBusy(false);
+    showImportStatus(pendingImport?unconfirmedImport:error.message);
+    return;
+  }
+  await recoverImport();
+};
 $('#editPhrase').onclick=()=>{if(!lesson)return;stopPlayback();const p=lesson.phrases[index];$('#editText').value=p.text;$('#editStart').value=p.start;$('#editEnd').value=p.end;$('#editError').textContent='';$('#editDialog').showModal()};$('#editForm').onsubmit=async e=>{e.preventDefault();try{lesson=await api(`/api/phrase/${lesson.id}/${index}`,json('PATCH',{text:$('#editText').value,start:+$('#editStart').value,end:+$('#editEnd').value,revision:lesson.phrases[index]?.revision}));$('#editDialog').close();rememberPhrase();renderPhrase();toast('Phrase saved.')}catch(err){$('#editError').textContent=err.message}};
 $('#lessonMenu').onclick=()=>{stopPlayback();$('#deleteDialog').showModal()};$('#confirmDelete').onclick=guarded(async()=>{const old=lesson.id;try{await api('/api/lesson/'+old,{method:'DELETE'})}
 catch(error){if(error.status!==404)throw error;$('#deleteDialog').close();clearMissingLesson(old);await refreshLibrary();return}
 $('#deleteDialog').close();forgetLesson(old);location.reload()});
 $('#resplitLesson').onclick=()=>{if(!lesson||busy)return;stopPlayback();$('#resplitDialog').showModal()};$('#cancelResplit').onclick=()=>$('#resplitDialog').close();$('#confirmResplit').onclick=guarded(async()=>{const lid=lesson.id;$('#resplitDialog').close();setBusy(true,'Finding new phrases');const j=await api('/api/resplit/'+lid,{method:'POST'}).catch(e=>{setBusy(false);throw e});await waitJob(j.jobId,'Finding new phrases');writePreference(phraseKey(lid),null);if(await loadLesson(lid,true))toast('New phrases are ready. Start again from the first phrase.')});
 document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT','BUTTON','SUMMARY'].includes(document.activeElement.tagName)||document.querySelector('dialog[open]')||busy||recording||starting||stopping)return;if(e.code==='Space'){e.preventDefault();guarded(togglePlay)()}if(e.code==='ArrowRight')selectPhrase(index+1);if(e.code==='ArrowLeft')selectPhrase(index-1)});window.addEventListener('resize',()=>{if(lesson)paintWave()});window.addEventListener('beforeunload',e=>{if(recording||starting||stopping||busy){e.preventDefault();e.returnValue=''}});
-guarded(async()=>{const list=await refreshLibrary(),last=readPreference(lastLessonKey);if(lesson||last===null)return;if(list.some(x=>x.id===last))await loadLesson(last);else clearMissingLesson(last)})();
+guarded(async()=>{if(pendingImport&&await recoverImport())return;const list=await refreshLibrary(),last=readPreference(lastLessonKey);if(busy||lesson||last===null)return;if(list.some(x=>x.id===last))await loadLesson(last);else clearMissingLesson(last)})();
 
 function openTakeHistory(){
   if(!lesson||busy||recording||starting||stopping)return;
