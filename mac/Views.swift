@@ -259,6 +259,8 @@ struct ToastView: View {
     }
 }
 
+private let missingSampleHint = "The guided sample is unavailable. Restart the local engine on this Mac to try again, or add your own clip."
+
 // MARK: Home
 
 struct LibraryView: View {
@@ -269,11 +271,16 @@ struct LibraryView: View {
                 Text("Home").font(.system(size: 28, weight: .semibold)).tracking(-0.6)
                 Text("Pick up a session, or bring in a new voice to practise with.").foregroundStyle(.secondary)
             }
-            HStack(spacing: 12) {
-                tile("Import from YouTube", "Paste a link to a video", "play.fill", "youtube") { s.importUpload = false; s.showImport = true }
-                tile("Upload a file", "Audio, video or a PDF from your Mac", "arrow.up", "upload") { s.importUpload = true; s.showImport = true }
-                tile("Try the sample", "A short guided example", "sparkles", "sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.disabled(s.sampleId == nil)
-            }.disabled(s.locked)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    if let id = s.sampleId {
+                        tile("Try the guided sample", "Practise with a built-in Mac voice", "sparkles", "sample") { Task { await s.openLesson(id) } }
+                    }
+                    tile("Import from YouTube", "Paste a link to a video", "play.fill", "youtube") { s.importUpload = false; s.showImport = true }
+                    tile("Upload a file", "Audio, video or a PDF from your Mac", "arrow.up", "upload") { s.importUpload = true; s.showImport = true }
+                }.disabled(s.locked)
+                if s.sampleId == nil && !s.locked { muted(missingSampleHint) }
+            }
             VStack(spacing: 0) {
                 HStack { Text("Sessions").font(.system(size: 15, weight: .semibold)); Spacer(); muted("\(s.library.count)") }.padding(.horizontal, 18).padding(.vertical, 14)
                 Rectangle().fill(Color.line).frame(height: 1)
@@ -346,11 +353,18 @@ struct EmptyStudio: View {
             Orb(seed: "welcome", size: 84)
             VStack(spacing: 10) {
                 Text("Practise English or French,\none phrase at a time.").font(.system(size: 28, weight: .semibold)).tracking(-0.6).multilineTextAlignment(.center)
-                Text("Bring in a clip of a speaker you like. Shadow Studio splits it into short phrases you can listen to, repeat and compare.").foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 470)
+                if s.sampleId != nil {
+                    Text("Start with a short example spoken by a built-in Mac voice.").foregroundStyle(.secondary)
+                } else if !s.locked {
+                    Text(missingSampleHint).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 470)
+                }
             }
             HStack(spacing: 10) {
-                Button { s.showImport = true } label: { Label("New session", systemImage: "plus") }.buttonStyle(PillStyle(primary: true))
-                Button("Try the sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.buttonStyle(PillStyle()).disabled(s.sampleId == nil)
+                if let id = s.sampleId {
+                    Button("Try the guided sample") { Task { await s.openLesson(id) } }.buttonStyle(PillStyle(primary: true))
+                }
+                Button { s.importUpload = false; s.showImport = true } label: { Label("Add a voice", systemImage: "plus") }
+                    .buttonStyle(PillStyle(primary: s.sampleId == nil))
             }.disabled(s.locked)
             HStack(alignment: .top, spacing: 12) {
                 how(1, "Import", "A YouTube link, an audio or video file, or a PDF.")
@@ -421,10 +435,18 @@ struct PracticePanel: View {
             } else {
                 PracticeSentence(phrase: phrase)
             }
+            if phrase.latest == nil && !s.recording {
+                muted("Listen for the speaker’s pauses and emphasis.")
+            }
             controls
             if let problem = s.microphoneProblem { MicrophoneRecoveryView(problem: problem) }
             if s.lesson?.language != "fr" { MouthGuide(phrase: phrase) }
-            if phrase.latest != nil { comparison }
+            if phrase.latest != nil {
+                VStack(alignment: .leading, spacing: 8) {
+                    muted("Replay your take and compare its rhythm with the original.")
+                    comparison
+                }
+            }
             Rectangle().fill(Color.line).frame(height: 1)
             if phrase.latest != nil { NextStepView(phrase: phrase) }
             else { deliveryGuide }
@@ -437,6 +459,9 @@ struct PracticePanel: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) { playbackButtons; Spacer(minLength: 8); recordButton }
                 VStack(alignment: .leading, spacing: 12) { HStack(spacing: 12) { playbackButtons }; recordButton }
+            }
+            if phrase.latest == nil && !s.recording && s.microphoneProblem == nil {
+                muted("Use the microphone to record yourself saying the phrase.")
             }
             TimelineView(.animation(minimumInterval: 0.1, paused: !s.isPlaying)) { _ in
                 let head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), phrase.end - phrase.start) : s.position

@@ -22,7 +22,7 @@ The local speech model and dependencies are already installed in this folder. Ke
 6. Review feedback, replay your take, or listen to **Original → you**.
 7. Use **Edit phrase** to correct transcription or adjust its start/end times. This clears the old feedback for that phrase. To redo the automatic split for a whole session (for example one imported with an older version), choose **Re-split phrases** (↻ in the browser, the session menu in the Mac and mobile apps). The audio is transcribed again, and that session's phrase edits and feedback are cleared. Your library saves sessions and their most recent feedback between launches.
 
-A built-in Mac voice sample is included to try the workflow. It is labelled as a sample, not a real YouTuber.
+Choose **Try the guided sample** to practise with a built-in Mac voice. Listen to a phrase, record it with your microphone, then choose **Your take** to replay it or **Original → you** to compare. If the sample is unavailable, restart the local engine on the Mac and reopen the client, or use the import action to add your own clip.
 
 On Mac, Shadow Studio reopens the last session at its selected phrase and remembers the selected phrase for each session. From Home or Voice Training, choose **Continue** in the sidebar to return to the displayed session and phrase. If the saved phrase changed and can no longer be matched, the session opens at phrase one. **Re-split phrases** also starts the session at phrase one.
 
