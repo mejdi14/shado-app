@@ -76,7 +76,9 @@ Scores are transparent practice heuristics, not validated assessments. Use repla
 
 Audio, recordings, model files, and lesson information stay in this folder's **data/** directory. YouTube imports contact YouTube. The speech model downloads from Hugging Face once; after it is cached, uploaded files and recordings can be processed offline. No audio is sent to a transcription provider. Voice Training sends its built-in example text to ElevenLabs when generating a new spoken example; it does not send your recordings. PDF import reads the PDF on this Mac, then sends the text it will voice (up to 20,000 characters) to ElevenLabs, where it is kept in your ElevenLabs history like any other generation; the PDF file itself and your recordings are not sent. Browser microphone permission is requested only when you click **Record a take**.
 
-The delete button removes a session and its audio/recordings from the Mac. Deletion has an explicit confirmation dialog. Back up the **data/** folder if you want to keep your practice.
+In the Mac app, open **Settings → Local storage** to see the file sizes for saved lessons and takes, including the guided sample. **Lesson files** includes lesson audio and metadata such as transcripts, edits and embedded feedback. **Take files** includes recording audio and separate take metadata. The totals exclude temporary files, Voice Training progress and cached examples, and speech models. Use **Refresh Usage** after changing your library and **Show Storage Folder** to open **data/** in Finder.
+
+**Delete session…** asks for confirmation before permanently removing the selected session folder, including its lesson audio, transcript, edits, recordings and feedback. Voice Training progress, cached examples and speech models are stored separately. Back up the **data/** folder if you want to keep your practice.
 
 ## YouTube imports
 

@@ -21,6 +21,11 @@ private struct PracticeSettingsView: View {
     @AppStorage(PracticeDefaults.speedKey) private var speed = PracticeDefaults.speed
     @AppStorage(PracticeDefaults.loopingKey) private var looping = PracticeDefaults.looping
     @State private var microphoneStatus = MicrophoneProblem.status
+    @State private var storageFolder: URL?
+    @State private var storageUsage: LocalStorageUsage?
+    @State private var storageRefresh = 0
+    @State private var checkingStorage = true
+    @State private var storageRevealFailed = false
 
     var body: some View {
         Form {
@@ -78,13 +83,98 @@ private struct PracticeSettingsView: View {
                     CopyEngineDiagnosticsButton(server: server)
                 }
             }
+            Section {
+                if checkingStorage {
+                    ProgressView("Checking storage…").controlSize(.small)
+                } else if let storageUsage {
+                    LabeledContent("Lesson files", value: ByteCountFormatter.string(fromByteCount: storageUsage.lessonBytes, countStyle: .file))
+                    LabeledContent("Take files", value: ByteCountFormatter.string(fromByteCount: storageUsage.takeBytes, countStyle: .file))
+                } else {
+                    Text("Storage usage is unavailable.").foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Show Storage Folder", action: showStorageFolder)
+                        .disabled(storageFolder == nil)
+                    Button("Refresh Usage") { storageRefresh += 1 }
+                        .disabled(checkingStorage)
+                }
+                if storageRevealFailed {
+                    Text("The storage folder couldn’t be opened in Finder.").foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Local storage")
+            } footer: {
+                Text("Lesson files include saved session audio and metadata, including transcripts, edits and embedded feedback. Take files include recordings and separate take metadata. The guided sample counts toward usage. Temporary files, Voice Training progress and cached examples, and speech models are excluded. To free space, open a session and choose Delete session…")
+            }
         }
         .formStyle(.grouped)
         .frame(width: 500, height: 600)
         .task { await server.refreshStatus() }
+        .task(id: storageRefresh) { await refreshStorage() }
         .onAppear { microphoneStatus = MicrophoneProblem.status }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             microphoneStatus = MicrophoneProblem.status
+        }
+    }
+
+    @MainActor private func refreshStorage() async {
+        checkingStorage = true
+        storageRevealFailed = false
+        let folder = server.projectDir()?.appendingPathComponent("app.py").resolvingSymlinksInPath()
+            .deletingLastPathComponent().appendingPathComponent("data", isDirectory: true)
+        var usage: LocalStorageUsage?
+        if let folder { usage = try? await LocalStorageUsage.read(from: folder) }
+        guard !Task.isCancelled else { return }
+        storageFolder = folder
+        storageUsage = usage
+        checkingStorage = false
+    }
+
+    private func showStorageFolder() {
+        guard let storageFolder else { return }
+        var isDirectory: ObjCBool = false
+        storageRevealFailed = !FileManager.default.fileExists(atPath: storageFolder.path, isDirectory: &isDirectory)
+            || !isDirectory.boolValue || !NSWorkspace.shared.open(storageFolder)
+    }
+}
+
+private struct LocalStorageUsage: Sendable {
+    var lessonBytes: Int64 = 0
+    var takeBytes: Int64 = 0
+
+    static func read(from folder: URL) async throws -> Self {
+        let manager = FileManager.default
+        var usage = Self()
+        for session in try manager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
+            try Task.checkCancellation()
+            guard isEngineID(session.lastPathComponent) else { continue }
+            let directory = try session.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard directory.isDirectory == true, directory.isSymbolicLink == false,
+                  let metadataBytes = try size(of: session.appendingPathComponent("lesson.json")) else { continue }
+            usage.lessonBytes += metadataBytes
+            for file in try manager.contentsOfDirectory(at: session, includingPropertiesForKeys: nil) {
+                if file.lastPathComponent == "audio.wav" {
+                    usage.lessonBytes += try size(of: file) ?? 0
+                } else if ["wav", "json"].contains(file.pathExtension),
+                          isEngineID(file.deletingPathExtension().lastPathComponent) {
+                    usage.takeBytes += try size(of: file) ?? 0
+                }
+            }
+        }
+        return usage
+    }
+
+    private static func isEngineID(_ name: String) -> Bool {
+        name.range(of: #"\A[0-9a-f]{32}\z"#, options: .regularExpression) != nil
+    }
+
+    private static func size(of file: URL) throws -> Int64? {
+        do {
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink == false else { return nil }
+            return values.fileSize.map(Int64.init)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+            return nil
         }
     }
 }
@@ -158,7 +248,7 @@ struct StudioHost: View {
         .alert("Remove this session?", isPresented: $store.showDelete) {
             Button("Keep session", role: .cancel) {}
             Button("Delete session", role: .destructive) { Task { await store.deleteLesson() } }
-        } message: { Text("Its imported audio, recordings, and feedback will be deleted from this Mac.") }
+        } message: { Text("This permanently deletes the session’s local folder, including its lesson audio, transcript, phrase edits, recordings, and feedback.") }
         .alert("Re-split this session?", isPresented: $store.showResplit) {
             Button("Keep phrases", role: .cancel) {}
             Button("Re-split phrases") { Task { await store.resplitLesson() } }
