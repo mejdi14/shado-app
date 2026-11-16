@@ -11,6 +11,45 @@ import SwiftUI
         Window("Shadow Studio", id: "main") { RootView().frame(minWidth: 1100, minHeight: 680) }
             .defaultSize(width: 1320, height: 880)
             .windowStyle(.hiddenTitleBar)
+        Settings { PracticeSettingsView() }
+    }
+}
+
+private struct PracticeSettingsView: View {
+    @AppStorage(PracticeDefaults.modeKey) private var mode = PracticeDefaults.mode
+    @AppStorage(PracticeDefaults.speedKey) private var speed = PracticeDefaults.speed
+    @AppStorage(PracticeDefaults.loopingKey) private var looping = PracticeDefaults.looping
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Practice mode", selection: $mode) {
+                    ForEach(Mode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Picker("Playback speed", selection: Binding(
+                    get: { PracticeDefaults.validSpeed(speed) },
+                    set: { speed = $0 }
+                )) {
+                    ForEach(PracticeDefaults.speeds, id: \.self) { speed in
+                        Text(speedLabel(speed)).tag(speed)
+                    }
+                }
+                Toggle("Repeat phrase", isOn: $looping)
+            } header: {
+                Text("Practice defaults")
+            } footer: {
+                Text("Saved on this Mac. These defaults apply when you launch Shadow Studio or open a different session.")
+            }
+            Button("Reset Defaults") {
+                mode = PracticeDefaults.mode
+                speed = PracticeDefaults.speed
+                looping = PracticeDefaults.looping
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440, height: 260)
     }
 }
 

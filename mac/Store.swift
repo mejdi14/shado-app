@@ -28,6 +28,20 @@ enum Mode: String, CaseIterable {
     var hint: String { ["listen": "Listen first, then record your own take.", "recall": "The words are hidden. Record from memory.", "shadow": "Use headphones. The original plays while you record."][rawValue]! }
 }
 
+enum PracticeDefaults {
+    static let modeKey = "shadow-practice-mode"
+    static let speedKey = "shadow-practice-speed"
+    static let loopingKey = "shadow-practice-looping"
+    static let mode = Mode.listen
+    static let speed = 1.0
+    static let looping = false
+    static let speeds = [0.65, 0.8, speed, 1.15]
+
+    static func validSpeed(_ value: Double) -> Double {
+        speeds.contains(value) ? value : speed
+    }
+}
+
 @MainActor final class Store: NSObject, ObservableObject, AVAudioPlayerDelegate {
     let api: API
     @Published var showLibrary = false
@@ -35,10 +49,10 @@ enum Mode: String, CaseIterable {
     @Published var library: [LibraryItem] = []
     @Published var lesson: Lesson?
     @Published private(set) var index = 0
-    @Published var mode = Mode.listen
-    @Published var looping = false
+    @Published var mode = PracticeDefaults.mode
+    @Published var looping = PracticeDefaults.looping
     @Published var concealed = false
-    @Published var speed = 1.0 { didSet { original?.rate = Float(speed) } }
+    @Published var speed = PracticeDefaults.speed { didSet { original?.rate = Float(speed) } }
     @Published var busy: Busy?
     @Published var toast: String?
     @Published var voice: VoiceMap?
@@ -84,7 +98,18 @@ enum Mode: String, CaseIterable {
     var playbackDone: (() -> Void)?
     var playOnce = false
 
-    init(api: API) { self.api = api; super.init() }
+    init(api: API) {
+        self.api = api
+        super.init()
+        applyPracticeDefaults()
+    }
+
+    private func applyPracticeDefaults() {
+        let defaults = UserDefaults.standard
+        setMode(defaults.string(forKey: PracticeDefaults.modeKey).flatMap(Mode.init(rawValue:)) ?? PracticeDefaults.mode, force: true)
+        speed = PracticeDefaults.validSpeed(defaults.double(forKey: PracticeDefaults.speedKey))
+        looping = defaults.object(forKey: PracticeDefaults.loopingKey) as? Bool ?? PracticeDefaults.looping
+    }
 
     var locked: Bool { navigating || recording || starting || stopping || busy != nil }
     var phrase: Phrase? { lesson.flatMap { $0.phrases.indices.contains(index) ? $0.phrases[index] : nil } }
@@ -177,6 +202,7 @@ enum Mode: String, CaseIterable {
             }
         }
         original = player
+        if lesson?.id != l.id { applyPracticeDefaults() }
         index = selectedIndex
         lesson = l
         savePosition()
@@ -467,7 +493,7 @@ enum Mode: String, CaseIterable {
             let lid = try await waitJob(j.jobId, "Finding your phrases")
             try await loadLesson(lid); showTraining = false; showLibrary = false
             importURL = ""; importFile = nil
-            show("Your practice session is ready. Start by listening to the first phrase.")
+            show("Your practice session is ready.")
         } catch { importError = error.localizedDescription; showImport = true }
     }
 

@@ -451,7 +451,7 @@ struct PracticePanel: View {
     @ViewBuilder var playbackButtons: some View {
         Button { s.togglePlay() } label: { Label(s.isPlaying ? "Pause" : "Listen", systemImage: s.isPlaying ? "pause.fill" : "play.fill") }
             .buttonStyle(PillStyle(primary: phrase.latest == nil)).keyboardShortcut(.space, modifiers: []).disabled(s.locked).help("Play the example (Space)")
-        Menu { ForEach([0.65, 0.8, 1.0, 1.15], id: \.self) { v in Button(speedLabel(v)) { s.speed = v } } } label: { Text(speedLabel(s.speed)) }
+        Menu { ForEach(PracticeDefaults.speeds, id: \.self) { v in Button(speedLabel(v)) { s.speed = v } } } label: { Text(speedLabel(s.speed)) }
             .menuStyle(.borderlessButton).fixedSize().disabled(s.locked).help("Playback speed")
         Button { s.looping.toggle() } label: { Image(systemName: "repeat") }
             .buttonStyle(RoundStyle(size: 30, fill: s.looping ? .selected : .surface)).disabled(s.locked)
