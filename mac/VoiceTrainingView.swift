@@ -160,7 +160,7 @@ struct VoiceTrainingView: View {
                 Text(t.exercise.instruction).font(.system(size: 13)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
                     Button { Task { await t.toggleRecording() } } label: {
-                        Label(t.starting ? "Opening microphone…" : t.recording ? "Stop recording" : "Record your voice", systemImage: t.recording ? "stop.fill" : "mic.fill")
+                        Label(t.starting ? "Opening microphone…" : t.recording ? "Stop recording" : t.microphoneProblem != nil ? "Retry recording" : "Record your voice", systemImage: t.recording ? "stop.fill" : "mic.fill")
                     }.buttonStyle(PillStyle(primary: true)).disabled(t.starting || t.rendering || t.saving || (t.technique == .pace && !t.heardExample))
                     if t.recording {
                         HStack(spacing: 7) { Circle().fill(Color.rec).frame(width: 7, height: 7); Text(String(format: "%.1fs / %.0fs", t.seconds, t.limit)).monospacedDigit() }
@@ -174,6 +174,7 @@ struct VoiceTrainingView: View {
                     Text("Microphone starts only when you record. Takes are temporary and stay on this Mac.").font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 if let error = t.error { Label(error, systemImage: "exclamationmark.circle").font(.system(size: 12)).foregroundStyle(Color.warn).fixedSize(horizontal: false, vertical: true) }
+                if let problem = t.microphoneProblem { MicrophoneRecoveryView(problem: problem) }
                 if let feedback = t.feedback { feedbackView(feedback) }
             }.padding(22)
         }.panel(18)
@@ -212,8 +213,8 @@ struct VoiceTrainingView: View {
                 }
             }
             HStack(spacing: 9) {
-                Button { t.resetTake(); Task { await t.toggleRecording() } } label: { Label("Try Again", systemImage: "arrow.counterclockwise") }
-                    .buttonStyle(PillStyle(primary: !feedback.good)).disabled(t.locked || t.saving)
+                Button { Task { await t.toggleRecording() } } label: { Label("Try Again", systemImage: "arrow.counterclockwise") }
+                    .buttonStyle(PillStyle(primary: !feedback.good)).disabled(t.locked || t.saving || t.rendering || (t.technique == .pace && !t.heardExample))
                 if t.technique.selfReview && feedback.usable && !t.savedThisTake {
                     Button(t.heardTake ? "Sounds clear · mark practised" : "Replay your take to review") { Task { await t.markPracticed() } }.buttonStyle(PillStyle()).disabled(!t.heardTake || t.saving || t.playing || t.playingTake || t.rendering)
                 } else if feedback.good && !t.savedThisTake && !t.saving {

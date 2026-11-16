@@ -19,6 +19,7 @@ private struct PracticeSettingsView: View {
     @AppStorage(PracticeDefaults.modeKey) private var mode = PracticeDefaults.mode
     @AppStorage(PracticeDefaults.speedKey) private var speed = PracticeDefaults.speed
     @AppStorage(PracticeDefaults.loopingKey) private var looping = PracticeDefaults.looping
+    @State private var microphoneStatus = MicrophoneProblem.status
 
     var body: some View {
         Form {
@@ -47,9 +48,21 @@ private struct PracticeSettingsView: View {
                 speed = PracticeDefaults.speed
                 looping = PracticeDefaults.looping
             }
+            Section("Microphone") {
+                LabeledContent("Access", value: microphoneStatus)
+                HStack {
+                    MicrophoneSettingsButton()
+                    MicrophoneSettingsButton(showSound: true)
+                    Button("Refresh Status") { microphoneStatus = MicrophoneProblem.status }
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 260)
+        .frame(width: 440, height: 400)
+        .onAppear { microphoneStatus = MicrophoneProblem.status }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            microphoneStatus = MicrophoneProblem.status
+        }
     }
 }
 

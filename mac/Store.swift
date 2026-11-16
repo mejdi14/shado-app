@@ -62,6 +62,7 @@ enum PracticeDefaults {
     @Published var isTakePlaying = false
     @Published var recording = false
     @Published var starting = false
+    @Published var microphoneProblem: MicrophoneProblem?
     @Published var stopping = false
     @Published var recordSeconds = 0.0
     @Published var showImport = false
@@ -329,30 +330,27 @@ enum PracticeDefaults {
 
     // MARK: Recording
 
-    func micAllowed() async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: return true
-        case .notDetermined: return await AVCaptureDevice.requestAccess(for: .audio)
-        default: return false
-        }
-    }
-
     func toggleRecording() async {
         if recording { stopRecording(); return }
         guard phrase != nil, !locked else { return }
-        starting = true; stopPlayback()
-        guard await micAllowed() else {
-            starting = false
-            show("Microphone access was denied. Allow Shadow Studio in System Settings → Privacy & Security → Microphone, then try again.")
+        starting = true
+        defer { starting = false }
+        microphoneProblem = nil
+        do { try await MicrophoneProblem.checkInput() }
+        catch {
+            microphoneProblem = error as? MicrophoneProblem ?? .failed
             return
         }
+        stopPlayback()
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false]
         guard let r = try? AVAudioRecorder(url: url, settings: settings), r.record() else {
-            starting = false; show("Microphone recording failed. Please try again."); return
+            try? FileManager.default.removeItem(at: url)
+            microphoneProblem = .failed
+            return
         }
         recorder = r; recordFile = url
-        recording = true; starting = false; recordSeconds = 0
+        recording = true; recordSeconds = 0
         startLive()
         let began = Date()
         recordTask = Task { while !Task.isCancelled { recordSeconds = Date().timeIntervalSince(began); try? await Task.sleep(nanoseconds: 200_000_000) } }

@@ -422,6 +422,7 @@ struct PracticePanel: View {
                 PracticeSentence(phrase: phrase)
             }
             controls
+            if let problem = s.microphoneProblem { MicrophoneRecoveryView(problem: problem) }
             if s.lesson?.language != "fr" { MouthGuide(phrase: phrase) }
             if phrase.latest != nil { comparison }
             Rectangle().fill(Color.line).frame(height: 1)
@@ -464,7 +465,7 @@ struct PracticePanel: View {
             Button { Task { await s.toggleRecording() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: s.recording ? "stop.fill" : "mic.fill").foregroundStyle(Color.rec)
-                    Text(s.recording ? "Stop · \(fmt(s.recordSeconds))" : phrase.latest == nil ? "Record" : "Try again").monospacedDigit()
+                    Text(s.recording ? "Stop · \(fmt(s.recordSeconds))" : s.microphoneProblem != nil ? "Retry recording" : phrase.latest == nil ? "Record" : "Try again").monospacedDigit()
                 }
             }.buttonStyle(PillStyle(primary: phrase.latest != nil || s.recording)).keyboardShortcut("r", modifiers: [])
                 .disabled(s.starting || s.stopping || s.busy != nil).help(s.recording ? "Stop recording (R)" : "Record a take (R)")

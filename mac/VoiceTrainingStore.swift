@@ -33,6 +33,7 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
     @Published var loadingProgress = false
     @Published var progressError: String?
     @Published var error: String?
+    @Published var microphoneProblem: MicrophoneProblem?
     @Published var starting = false
     @Published var recording = false
     @Published var seconds = 0.0
@@ -114,6 +115,7 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
         stopPlayback()
         if let url = takeURL { try? FileManager.default.removeItem(at: url) }; takeURL = nil
         frames = []; feedback = nil; error = nil; seconds = 0; savedThisTake = false; heardTake = false
+        microphoneProblem = nil
     }
 
     func leave() {
@@ -287,41 +289,47 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
 
     func toggleRecording() async {
         if recording { finishRecording(); return }
-        guard !starting, !rendering else { return }
-        resetTake(); starting = true
+        guard !starting, !rendering, !saving, technique != .pace || heardExample else { return }
+        starting = true
+        defer { starting = false }
+        microphoneProblem = nil
         let token = generation
-        let allowed: Bool
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: allowed = true
-        case .notDetermined: allowed = await AVCaptureDevice.requestAccess(for: .audio)
-        default: allowed = false
+        do { try await MicrophoneProblem.checkInput() }
+        catch {
+            if generation == token { microphoneProblem = error as? MicrophoneProblem ?? .failed }
+            return
         }
         guard generation == token else { return }
-        guard allowed else { starting = false; error = "Allow Shadow Studio in System Settings → Privacy & Security → Microphone, then try again."; return }
+        stopPlayback()
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("shadow-voice-\(UUID().uuidString).wav")
-        takeURL = url
+        var newRecorder: AVAudioRecorder?
         do {
+            let e = AVAudioEngine(), input = e.inputNode, format = input.outputFormat(forBus: 0)
+            guard format.sampleRate > 0, format.channelCount > 0 else { throw MicrophoneProblem.unavailable }
             let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false]
             let r = try AVAudioRecorder(url: url, settings: settings)
-            guard r.record() else { throw AppError(message: "The microphone couldn’t start. Check your input device and try again.") }
-            recorder = r
-            let e = AVAudioEngine(), input = e.inputNode, format = input.outputFormat(forBus: 0)
-            guard format.sampleRate > 0, format.channelCount > 0 else { throw AppError(message: "No microphone input is available. Select a microphone in System Settings → Sound.") }
+            newRecorder = r
+            guard r.record() else { throw MicrophoneProblem.failed }
+            let recordingToken = UUID()
             let sr = format.sampleRate, accumulator = SampleBuffer()
             input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 guard let channel = buffer.floatChannelData?[0] else { return }
                 let result = accumulator.add(UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)), sr)
                 if !result.isEmpty {
                     DispatchQueue.main.async {
-                        guard let self, self.generation == token, self.recording else { return }
+                        guard let self, self.generation == recordingToken, self.recording else { return }
                         for frame in result {
                             self.frames.append(TrainingFrame(time: Double(self.frames.count) * 1024 / sr, energy: frame.rms, pitch: frame.hz))
                         }
                     }
                 }
             }
-            engine = e; try e.start()
-            recording = true; starting = false
+            do { try e.start() }
+            catch { input.removeTap(onBus: 0); e.stop(); throw error }
+            resetTake()
+            generation = recordingToken
+            takeURL = url; recorder = r; engine = e
+            recording = true
             let began = Date()
             timer = Task {
                 while !Task.isCancelled {
@@ -331,9 +339,9 @@ func trainingEnvelope(_ exercise: VoiceExercise, _ technique: VoiceTechnique, _ 
                 }
             }
         } catch {
-            recorder?.stop(); recorder = nil; stopLive(); starting = false
-            if let url = takeURL { try? FileManager.default.removeItem(at: url) }; takeURL = nil
-            self.error = error.localizedDescription
+            newRecorder?.stop()
+            try? FileManager.default.removeItem(at: url)
+            microphoneProblem = error as? MicrophoneProblem ?? .failed
         }
     }
 
