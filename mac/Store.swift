@@ -1,5 +1,24 @@
 import Foundation
 import AVFoundation
+import CryptoKit
+
+private struct SavedPhrase: Codable {
+    let index: Int
+    let start: Double
+    let end: Double
+    let textHash: Data
+
+    init(_ phrase: Phrase, index: Int) {
+        self.index = index
+        start = phrase.start
+        end = phrase.end
+        textHash = Data(SHA256.hash(data: Data(phrase.text.utf8)))
+    }
+
+    func matches(_ phrase: Phrase) -> Bool {
+        start == phrase.start && end == phrase.end && textHash == Data(SHA256.hash(data: Data(phrase.text.utf8)))
+    }
+}
 
 enum Mode: String, CaseIterable {
     case listen, recall, shadow
@@ -15,7 +34,7 @@ enum Mode: String, CaseIterable {
     @Published var showTraining = false
     @Published var library: [LibraryItem] = []
     @Published var lesson: Lesson?
-    @Published var index = 0
+    @Published private(set) var index = 0
     @Published var mode = Mode.listen
     @Published var looping = false
     @Published var concealed = false
@@ -47,6 +66,7 @@ enum Mode: String, CaseIterable {
     private var pdfVoiceLanguage = ""
     private var pdfVoiceKey: String { importLanguage == "fr" ? "pdf-voice-fr" : "pdf-voice" }
     @Published var sampleVoice: String?
+    @Published private var navigating = false
     var samplePlayer: AVAudioPlayer?
     var sampleTask: Task<Void, Never>?
 
@@ -60,13 +80,14 @@ enum Mode: String, CaseIterable {
     var recordTask: Task<Void, Never>?
     var autoStop: Task<Void, Never>?
     var toastTask: Task<Void, Never>?
+    private var voiceTask: Task<Void, Never>?
     var playbackDone: (() -> Void)?
     var playOnce = false
 
     init(api: API) { self.api = api; super.init() }
 
-    var locked: Bool { recording || starting || stopping || busy != nil }
-    var phrase: Phrase? { lesson.flatMap { index < $0.phrases.count ? $0.phrases[index] : nil } }
+    var locked: Bool { navigating || recording || starting || stopping || busy != nil }
+    var phrase: Phrase? { lesson.flatMap { $0.phrases.indices.contains(index) ? $0.phrases[index] : nil } }
     var sampleId: String? { library.first { $0.sample }?.id }
 
     func show(_ message: String) {
@@ -79,38 +100,101 @@ enum Mode: String, CaseIterable {
     }
 
     func start() async {
+        guard !locked else { return }
+        navigating = true
+        defer { navigating = false }
         await guarded {
             try await refreshLibrary()
             if let last = UserDefaults.standard.string(forKey: "shadow-lesson"), library.contains(where: { $0.id == last }) { try await loadLesson(last) }
         }
     }
 
-    func refreshLibrary() async throws { library = try await api.get([LibraryItem].self, "/api/library") }
+    private func phraseKey(_ id: String) -> String { "shadow-phrase-" + id }
 
-    func loadLesson(_ id: String, keepIndex: Bool = false) async throws {
+    private func savePosition() {
+        guard let id = lesson?.id else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(id, forKey: "shadow-lesson")
+        if let phrase, let data = try? PropertyListEncoder().encode(SavedPhrase(phrase, index: index)) {
+            defaults.set(data, forKey: phraseKey(id))
+        } else {
+            defaults.removeObject(forKey: phraseKey(id))
+        }
+    }
+
+    private func forgetLesson(_ id: String) {
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: phraseKey(id))
+        if defaults.string(forKey: "shadow-lesson") == id { defaults.removeObject(forKey: "shadow-lesson") }
+        if lesson?.id == id {
+            stopPlayback()
+            lesson = nil
+            original = nil
+            index = 0
+            phraseChanged()
+        }
+    }
+
+    func refreshLibrary() async throws {
+        library = try await api.get([LibraryItem].self, "/api/library")
+        if let id = UserDefaults.standard.string(forKey: "shadow-lesson"), !library.contains(where: { $0.id == id }) {
+            forgetLesson(id)
+            show("Your last session is no longer available.")
+        }
+    }
+
+    private func loadLesson(_ id: String, at requestedIndex: Int? = nil) async throws {
         stopPlayback()
-        let l = try await api.get(Lesson.self, "/api/lesson/" + id)
-        let data = try await api.send("/api/audio/" + id)
-        let player = try AVAudioPlayer(data: data)
-        player.enableRate = true; player.rate = Float(speed); player.prepareToPlay()
+        let l: Lesson
+        let player: AVAudioPlayer?
+        do {
+            l = try await api.get(Lesson.self, "/api/lesson/" + id)
+            if l.phrases.isEmpty {
+                player = nil
+            } else {
+                let data = try await api.send("/api/audio/" + id)
+                let audio = try AVAudioPlayer(data: data)
+                audio.enableRate = true; audio.rate = Float(speed); audio.prepareToPlay()
+                player = audio
+            }
+        } catch let error as AppError where error.statusCode == 404 {
+            forgetLesson(id)
+            library.removeAll { $0.id == id }
+            throw error
+        }
+        let data = UserDefaults.standard.data(forKey: phraseKey(id))
+        let saved = data.flatMap { try? PropertyListDecoder().decode(SavedPhrase.self, from: $0) }
+        var selectedIndex = 0
+        if let requestedIndex {
+            if l.phrases.indices.contains(requestedIndex) { selectedIndex = requestedIndex }
+        } else if let saved, !l.phrases.isEmpty {
+            if l.phrases.indices.contains(saved.index), saved.matches(l.phrases[saved.index]) {
+                selectedIndex = saved.index
+            } else if let match = l.phrases.firstIndex(where: saved.matches) {
+                selectedIndex = match
+            } else {
+                show("Your saved phrase has changed. Starting from the first phrase.")
+            }
+        }
         original = player
-        if !keepIndex { index = 0 }
+        index = selectedIndex
         lesson = l
-        index = min(index, l.phrases.count - 1)
-        UserDefaults.standard.set(id, forKey: "shadow-lesson")
+        savePosition()
         phraseChanged()
         try await refreshLibrary()
     }
 
     func phraseChanged() {
+        voiceTask?.cancel()
         stopPlayback(); setMode(mode, force: true)
         voice = nil; voiceFailed = false; position = 0
-        guard let l = lesson else { return }
+        guard let l = lesson, phrase != nil else { live = nil; return }
         let id = l.id, ix = index
         if live?.key != "\(id):\(ix)" { live = nil }
-        Task {
-            guard let v = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)") else { if lesson?.id == id, index == ix { voiceFailed = true }; return }
-            guard lesson?.id == id, index == ix, let ph = phrase else { return }
+        voiceTask = Task {
+            let result = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)")
+            guard !Task.isCancelled, lesson?.id == id, index == ix, let ph = phrase else { return }
+            guard let v = result else { voiceFailed = true; return }
             let src = makeTrack(v.source.energy, v.source.pitch) { Double($0 + 1) * v.hop }
             let sp = v.take?.speed ?? 1
             var you: [Pt]? = nil, shift = 0.0, scale = sp
@@ -128,7 +212,7 @@ enum Mode: String, CaseIterable {
 
     func select(_ i: Int) {
         guard let l = lesson, !locked, i >= 0, i < l.phrases.count else { return }
-        index = i; phraseChanged()
+        index = i; savePosition(); phraseChanged()
     }
 
     func setMode(_ m: Mode, force: Bool = false) {
@@ -136,8 +220,19 @@ enum Mode: String, CaseIterable {
         mode = m; concealed = m == .recall
     }
 
-    func openLibrary() async { await guarded { try await refreshLibrary(); stopPlayback(); showTraining = false; showLibrary = true } }
-    func openLesson(_ id: String) async { await guarded { try await loadLesson(id); showTraining = false; showLibrary = false } }
+    func openLibrary() async {
+        guard !locked else { return }
+        navigating = true
+        defer { navigating = false }
+        await guarded { try await refreshLibrary(); stopPlayback(); showTraining = false; showLibrary = true }
+    }
+
+    func openLesson(_ id: String) async {
+        guard !locked else { return }
+        navigating = true
+        defer { navigating = false }
+        await guarded { try await loadLesson(id); showTraining = false; showLibrary = false }
+    }
 
     // MARK: Playback
 
@@ -218,7 +313,7 @@ enum Mode: String, CaseIterable {
 
     func toggleRecording() async {
         if recording { stopRecording(); return }
-        guard lesson != nil, !locked else { return }
+        guard phrase != nil, !locked else { return }
         starting = true; stopPlayback()
         guard await micAllowed() else {
             starting = false
@@ -292,7 +387,7 @@ enum Mode: String, CaseIterable {
             busy = Busy(title: "Reviewing your take", message: "Listening to your recording…")
             let j = try await api.get(JobStart.self, "/api/record/\(l.id)/\(ix)?speed=\(speedUsed)", method: "POST", contentType: "audio/wav", file: url)
             _ = try await waitJob(j.jobId, "Reviewing your take")
-            try await loadLesson(l.id, keepIndex: true)
+            try await loadLesson(l.id, at: ix)
             showFeedback = true
             show("Your feedback is ready. Listen back, then choose one detail to practise.")
         }
@@ -395,9 +490,10 @@ enum Mode: String, CaseIterable {
     }
 
     func savePhrase(text: String, start: Double, end: Double) async -> String? {
-        guard let l = lesson else { return nil }
+        guard let l = lesson, phrase != nil else { return nil }
         do {
             lesson = try await api.get(Lesson.self, "/api/phrase/\(l.id)/\(index)", method: "PATCH", json: ["text": text, "start": start, "end": end])
+            savePosition()
             phraseChanged()
             show("Phrase updated. Record a new take to compare with this version.")
             return nil
@@ -412,17 +508,20 @@ enum Mode: String, CaseIterable {
             busy = Busy(title: "Finding new phrases", message: "Preparing audio…")
             let j = try await api.get(JobStart.self, "/api/resplit/" + l.id, method: "POST")
             _ = try await waitJob(j.jobId, "Finding new phrases")
-            try await loadLesson(l.id)
+            UserDefaults.standard.removeObject(forKey: phraseKey(l.id))
+            try await loadLesson(l.id, at: 0)
             show("New phrases are ready. Start again from the first phrase.")
         }
     }
 
     func deleteLesson() async {
-        guard let l = lesson else { return }
+        guard !locked, let l = lesson else { return }
+        navigating = true
+        defer { navigating = false }
         await guarded {
             _ = try await api.send("/api/lesson/" + l.id, method: "DELETE")
-            stopPlayback(); lesson = nil; original = nil; voice = nil; live = nil
-            UserDefaults.standard.removeObject(forKey: "shadow-lesson")
+            forgetLesson(l.id)
+            library.removeAll { $0.id == l.id }
             try await refreshLibrary()
         }
     }

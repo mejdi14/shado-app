@@ -6,7 +6,11 @@ let port = ProcessInfo.processInfo.environment["SHADOW_PORT"] ?? "8765"
 let base = URL(string: "http://127.0.0.1:\(port)")!
 let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Shadow Studio.log")
 
-struct AppError: LocalizedError { let message: String; var errorDescription: String? { message } }
+struct AppError: LocalizedError {
+    let message: String
+    var statusCode: Int? = nil
+    var errorDescription: String? { message }
+}
 
 final class API {
     let token: String
@@ -31,7 +35,7 @@ final class API {
         } catch { throw AppError(message: "Shadow Studio's local server isn't responding. Quit and open the app again.") }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
-            throw AppError(message: detail ?? "Something went wrong. Please try again.")
+            throw AppError(message: detail ?? "Something went wrong. Please try again.", statusCode: http.statusCode)
         }
         return data
     }

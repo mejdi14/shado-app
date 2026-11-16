@@ -193,7 +193,15 @@ struct Sidebar: View {
             HStack(spacing: 9) { Orb(seed: "shadow studio", size: 22); Text("Shadow Studio").font(.system(size: 15, weight: .semibold)).tracking(-0.2) }.padding(.horizontal, 8).padding(.bottom, 18)
             Button { s.stopPlayback(); training.stopPlayback(); s.showImport = true } label: { Label("New session", systemImage: "plus").frame(maxWidth: .infinity) }.buttonStyle(PillStyle(primary: true)).disabled(s.locked).padding(.bottom, 16)
             nav("Home", "square.grid.2x2", active: s.showLibrary && !s.showTraining) { Task { await s.openLibrary() } }
-            nav("Practice", "waveform", active: !s.showLibrary && !s.showTraining) { s.showTraining = false; s.showLibrary = false }
+            if (s.showLibrary || s.showTraining), let lesson = s.lesson, s.phrase != nil {
+                let language = lesson.language == "fr" ? "French" : "English"
+                nav("Continue", "waveform", active: false, subtitle: lesson.title,
+                    detail: "\(language) · Phrase \(s.index + 1) of \(lesson.phrases.count)") {
+                    Task { await s.openLesson(lesson.id) }
+                }
+            } else {
+                nav("Practice", "waveform", active: !s.showLibrary && !s.showTraining) { s.showTraining = false; s.showLibrary = false }
+            }
             nav("Voice Training", "waveform.path", active: s.showTraining) { s.stopPlayback(); s.showTraining = true }
             if !s.library.isEmpty {
                 Text("Sessions").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).padding(.horizontal, 8).padding(.top, 20).padding(.bottom, 4)
@@ -215,9 +223,18 @@ struct Sidebar: View {
         .padding(.horizontal, 12).padding(.top, 6).padding(.bottom, 14).frame(maxHeight: .infinity, alignment: .top)
         .background(Color.side.ignoresSafeArea())
     }
-    func nav(_ title: String, _ icon: String, active: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) { HStack(spacing: 9) { Image(systemName: icon).frame(width: 16); Text(title).fontWeight(active ? .medium : .regular); Spacer(minLength: 0) } }
-            .buttonStyle(RowStyle(active: active, pad: 7)).disabled(s.locked)
+    func nav(_ title: String, _ icon: String, active: Bool, subtitle: String? = nil, detail: String? = nil, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: icon).frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).fontWeight(active ? .medium : .regular)
+                    if let subtitle { muted(subtitle).lineLimit(1) }
+                    if let detail { muted(detail).monospacedDigit() }
+                }
+                Spacer(minLength: 0)
+            }.accessibilityElement(children: .combine)
+        }.buttonStyle(RowStyle(active: active, pad: 7)).disabled(s.locked)
     }
 }
 
@@ -256,7 +273,7 @@ struct LibraryView: View {
                 tile("Import from YouTube", "Paste a link to a video", "play.fill", "youtube") { s.importUpload = false; s.showImport = true }
                 tile("Upload a file", "Audio, video or a PDF from your Mac", "arrow.up", "upload") { s.importUpload = true; s.showImport = true }
                 tile("Try the sample", "A short guided example", "sparkles", "sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.disabled(s.sampleId == nil)
-            }
+            }.disabled(s.locked)
             VStack(spacing: 0) {
                 HStack { Text("Sessions").font(.system(size: 15, weight: .semibold)); Spacer(); muted("\(s.library.count)") }.padding(.horizontal, 18).padding(.vertical, 14)
                 Rectangle().fill(Color.line).frame(height: 1)
@@ -304,6 +321,18 @@ struct StudioView: View {
                     Inspector(lesson: l).frame(width: 330)
                 }
             }
+        } else if let l = s.lesson {
+            VStack(spacing: 14) {
+                Orb(seed: l.id, size: 56)
+                Text(l.title).font(.system(size: 22, weight: .semibold))
+                Text("This session has no phrases to practise.").foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    if l.sample != true {
+                        Button("Re-split phrases…") { s.showResplit = true }.buttonStyle(PillStyle())
+                    }
+                    Button("Delete session…", role: .destructive) { s.showDelete = true }.buttonStyle(PillStyle())
+                }.disabled(s.locked)
+            }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView { EmptyStudio() }
         }
@@ -322,7 +351,7 @@ struct EmptyStudio: View {
             HStack(spacing: 10) {
                 Button { s.showImport = true } label: { Label("New session", systemImage: "plus") }.buttonStyle(PillStyle(primary: true))
                 Button("Try the sample") { if let id = s.sampleId { Task { await s.openLesson(id) } } }.buttonStyle(PillStyle()).disabled(s.sampleId == nil)
-            }
+            }.disabled(s.locked)
             HStack(alignment: .top, spacing: 12) {
                 how(1, "Import", "A YouTube link, an audio or video file, or a PDF.")
                 how(2, "Practise", "Listen to a phrase, then record yourself.")
