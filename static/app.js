@@ -46,7 +46,30 @@ function clearMissingLesson(id){
   }
   toast('That session is no longer in your library. Choose another session or add a voice.');
 }
-async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#libraryGrid').innerHTML=list.length?list.map(l=>`<button class="library-card card" data-lesson="${l.id}"><span>${l.sample?'GUIDED SAMPLE':(l.language==='fr'?'FRENCH':'ENGLISH')+' / '+(l.source.startsWith('http')?'YOUTUBE':l.source.startsWith('PDF,')?'PDF':'UPLOADED AUDIO')}</span><h3>${esc(l.title)}</h3><p>${l.count} phrases · ${fmt(l.duration)}<br>${l.practised} practised <span>↗</span></p></button>`).join(''):'<p class="empty-library">Your library is ready for its first voice. Add a clip to get started.</p>';$$('[data-lesson]').forEach(b=>b.onclick=guarded(async()=>{if(await loadLesson(b.dataset.lesson))showView('studio')}));if(current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
+let libraryItems=[];
+function renderLibrary(){
+  const query=$('#librarySearch').value.trim().toLocaleLowerCase(),language=$('#libraryLanguage').value,progress=$('#libraryProgress').value,sort=$('#librarySort').value;
+  const ratio=l=>l.practised/Math.max(1,l.count);
+  const items=libraryItems.filter(l=>{
+    const status=l.practised===0?'new':l.count>0&&l.practised>=l.count?'complete':'started';
+    return l.title.toLocaleLowerCase().includes(query)&&(language==='all'||language===(l.language==='fr'?'fr':'en'))&&(progress==='all'||progress===status);
+  });
+  if(sort==='title')items.sort((a,b)=>a.title.localeCompare(b.title,undefined,{sensitivity:'base'}));
+  if(sort==='progress')items.sort((a,b)=>ratio(b)-ratio(a));
+  $('#libraryControls').hidden=!libraryItems.length;
+  $('#resetLibrary').disabled=!($('#librarySearch').value||language!=='all'||progress!=='all'||sort!=='newest');
+  const message=$('#libraryMessage');
+  message.textContent=items.length?'':libraryItems.length?'No sessions match. Change your search or filters, or choose Reset.':'Your library is ready for its first voice. Add a clip to get started.';
+  message.hidden=!!items.length;
+  $('#libraryGrid').innerHTML=items.map(l=>`<button class="library-card card" data-lesson="${esc(l.id)}"><span>${l.sample?'GUIDED SAMPLE':(l.language==='fr'?'FRENCH':'ENGLISH')+' / '+(l.source.startsWith('http')?'YOUTUBE':l.source.startsWith('PDF,')?'PDF':'UPLOADED AUDIO')}</span><h3>${esc(l.title)}</h3><p>${l.count} phrases · ${fmt(l.duration)}<br>${l.practised}/${l.count} practised <span>↗</span></p></button>`).join('');
+  $$('#libraryGrid [data-lesson]').forEach(b=>b.onclick=guarded(async()=>{if(await loadLesson(b.dataset.lesson))showView('studio')}));
+}
+async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#librarySample').hidden=!sampleId;libraryItems=list;renderLibrary();if(current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
+$('#libraryControls').onsubmit=e=>e.preventDefault();
+$('#librarySearch').oninput=renderLibrary;
+for(const selector of ['#libraryLanguage','#libraryProgress','#librarySort'])$(selector).onchange=renderLibrary;
+$('#resetLibrary').onclick=()=>{$('#libraryControls').reset();renderLibrary();$('#librarySearch').focus()};
+$('#librarySample').onclick=guarded(async()=>{if(sampleId&&await loadLesson(sampleId))showView('studio')});
 function showView(view){if(recording||starting||stopping||busy)return;stopPlayback();$('#libraryView').hidden=view!=='library';$('#studioView').hidden=view==='library';$('#libraryNav').classList.toggle('active',view==='library');$('#practiceNav').classList.toggle('active',view!=='library');$('#pageLabel').textContent=view==='library'?'Your library':'Practice studio'}
 async function loadLesson(id,restart=false){
   stopPlayback();

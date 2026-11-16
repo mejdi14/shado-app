@@ -2,4 +2,6 @@
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 @media(max-width:620px){.voice-tips{grid-template-columns:1fr}}
 
-#continueLesson{margin-top:16px;max-width:100%;white-space:normal;text-align:left;overflow-wrap:anywhere}
+#continueLesson{max-width:100%;white-space:normal;text-align:left;overflow-wrap:anywhere}
+
+.library-actions,.library-controls{display:flex;flex-wrap:wrap;gap:10px}.library-actions{align-items:center;row-gap:0}.library-actions button{margin-top:16px}.library-controls{align-items:end;margin-top:16px}.library-controls label{display:grid;gap:4px}.library-controls input,.library-controls select{min-height:38px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:var(--paper);color:var(--ink)}.library-controls input{max-width:100%;width:220px}.library-controls label:first-child{max-width:100%}

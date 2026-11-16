@@ -265,7 +265,64 @@ private let missingSampleHint = "The guided sample is unavailable. Restart the l
 
 struct LibraryView: View {
     @EnvironmentObject var s: Store
+    @State private var query = ""
+    @State private var language = "all"
+    @State private var progress = "all"
+    @State private var order = "newest"
+
+    private var visibleSessions: [LibraryItem] {
+        let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = s.library.filter { item in
+            let itemLanguage = item.language == "fr" ? "fr" : "en"
+            let status = item.practised == 0 ? "new" : item.practised >= item.count && item.count > 0 ? "complete" : "started"
+            return (search.isEmpty || item.title.localizedCaseInsensitiveContains(search))
+                && (language == "all" || language == itemLanguage)
+                && (progress == "all" || progress == status)
+        }
+        switch order {
+        case "title":
+            return matches.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        case "progress":
+            return matches.sorted {
+                Double($0.practised) / Double(max(1, $0.count)) > Double($1.practised) / Double(max(1, $1.count))
+            }
+        default:
+            return matches
+        }
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Search titles", text: $query)
+            HStack(spacing: 14) {
+                Picker("Language", selection: $language) {
+                    Text("All languages").tag("all")
+                    Text("English").tag("en")
+                    Text("French").tag("fr")
+                }
+                Picker("Progress", selection: $progress) {
+                    Text("All progress").tag("all")
+                    Text("Not started").tag("new")
+                    Text("In progress").tag("started")
+                    Text("Completed").tag("complete")
+                }
+                Picker("Sort by", selection: $order) {
+                    Text("Newest added").tag("newest")
+                    Text("Title A–Z").tag("title")
+                    Text("Most complete").tag("progress")
+                }
+                Button("Reset") {
+                    query = ""
+                    language = "all"
+                    progress = "all"
+                    order = "newest"
+                }.disabled(query.isEmpty && language == "all" && progress == "all" && order == "newest")
+            }.pickerStyle(.menu)
+        }.padding(.horizontal, 18).padding(.bottom, 14)
+    }
+
     var body: some View {
+        let sessions = visibleSessions
         VStack(alignment: .leading, spacing: 28) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Home").font(.system(size: 28, weight: .semibold)).tracking(-0.6)
@@ -282,15 +339,17 @@ struct LibraryView: View {
                 if s.sampleId == nil && !s.locked { muted(missingSampleHint) }
             }
             VStack(spacing: 0) {
-                HStack { Text("Sessions").font(.system(size: 15, weight: .semibold)); Spacer(); muted("\(s.library.count)") }.padding(.horizontal, 18).padding(.vertical, 14)
+                HStack { Text("Sessions").font(.system(size: 15, weight: .semibold)); Spacer(); muted("\(sessions.count)") }.padding(.horizontal, 18).padding(.vertical, 14)
+                if !s.library.isEmpty { controls }
                 Rectangle().fill(Color.line).frame(height: 1)
                 if s.library.isEmpty { muted("No sessions yet. Import a clip to create your first one.").frame(maxWidth: .infinity).padding(32) }
+                else if sessions.isEmpty { muted("No sessions match. Change your search or filters, or choose Reset.").frame(maxWidth: .infinity).padding(32) }
                 VStack(spacing: 2) {
-                    ForEach(s.library) { l in
+                    ForEach(sessions) { l in
                         Button { Task { await s.openLesson(l.id) } } label: {
                             HStack(spacing: 14) {
                                 Orb(seed: l.id, size: 32)
-                                VStack(alignment: .leading, spacing: 2) { Text(l.title).font(.system(size: 13.5, weight: .medium)).lineLimit(1).foregroundStyle(Color.ink); muted(sourceLabel(l.source, l.sample)) }
+                                VStack(alignment: .leading, spacing: 2) { Text(l.title).font(.system(size: 13.5, weight: .medium)).lineLimit(1).foregroundStyle(Color.ink); muted("\(l.language == "fr" ? "French" : "English") · \(sourceLabel(l.source, l.sample))") }
                                 Spacer(minLength: 12)
                                 muted("\(l.count) phrases").frame(width: 84, alignment: .leading)
                                 muted(fmt(l.duration)).monospacedDigit().frame(width: 52, alignment: .leading)
