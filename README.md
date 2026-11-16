@@ -26,6 +26,8 @@ A built-in Mac voice sample is included to try the workflow. It is labelled as a
 
 On Mac, Shadow Studio reopens the last session at its selected phrase and remembers the selected phrase for each session. From Home or Voice Training, choose **Continue** in the sidebar to return to the displayed session and phrase. If the saved phrase changed and can no longer be matched, the session opens at phrase one. **Re-split phrases** also starts the session at phrase one.
 
+In the browser, Shadow Studio reopens the last session and remembers the selected phrase for each lesson in that browser. Use **Continue** in Your library to return to the displayed lesson and phrase. If a saved phrase cannot be matched, the session starts at phrase one. Re-splitting also starts at phrase one. If the last session has been deleted, choose a different session from Your library.
+
 ## Voice Training (Mac app)
 
 Choose **Voice Training** in the Mac sidebar to practise one voice skill before shadowing. This is a separate screen with horizontally scrollable tabs for **Pitch, Intonation, Stress, Rhythm, Pace, Pauses, Energy, Articulation, and Connected Speech**. Each tab starts with simple drills and moves toward short phrases. Every level follows **Hear → See → Try → Feedback → Try Again**; you can open any technique or level at any time.
