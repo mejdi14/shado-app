@@ -52,8 +52,23 @@ final class API {
     static let shared = ServerManager()
     enum State { case starting, ready(API), failed(String) }
     @Published var state = State.starting
-    var process: Process?
-    var stopped = false
+    enum EngineConnection: String {
+        case unchecked = "Not checked"
+        case offline = "No response"
+        case otherService = "Unexpected response"
+        case stale = "Different engine build"
+        case matching = "Matching engine build"
+        case tokenUnavailable = "App connection failed"
+        case projectUnavailable = "Engine files unavailable"
+        case setupRequired = "First-time setup required"
+        case missingFFmpeg = "FFmpeg missing"
+    }
+    @Published private(set) var connection = EngineConnection.unchecked
+    @Published private(set) var engineStatus: EngineStatus?
+    @Published private(set) var checkingStatus = false
+    private var expectedSignature: String?
+    private var starting = false
+    private var process: Process?
 
     func projectDir() -> URL? {
         var candidates = [Bundle.main.bundleURL.deletingLastPathComponent()]
@@ -61,56 +76,126 @@ final class API {
         return candidates.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("app.py").path) }
     }
 
-    func serverUp(expected: String) async throws -> Bool {
+    private func serverUp(expected: String) async throws -> Bool {
         var req = URLRequest(url: base.appendingPathComponent("api/status"), cachePolicy: .reloadIgnoringLocalCacheData); req.timeoutInterval = 1.5
-        guard let (data, response) = try? await URLSession.shared.data(for: req) else { return false }
+        let reply = try? await URLSession.shared.data(for: req)
+        try Task.checkCancellation()
+        engineStatus = nil
+        guard let (data, response) = reply else {
+            connection = .offline
+            return false
+        }
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              String(data: data, encoding: .utf8)?.contains("\"local\":true") == true else {
+              let status = try? JSONDecoder().decode(EngineStatus.self, from: data), status.local else {
+            connection = .otherService
             throw AppError(message: "Another app is using Shadow Studio's port (\(port)). Close it, then click Try again.")
         }
         guard http.value(forHTTPHeaderField: "X-Shadow-Engine") == expected else {
+            connection = .stale
             throw AppError(message: "An outdated engine or another copy of Shadow Studio is still running. In its Terminal window, press Control-C to stop “Start Shadow Studio.command”, or quit the other Mac app. Then click Try again. Rebuilding alone does not restart a Terminal engine.")
         }
+        engineStatus = status
+        connection = .matching
         return true
     }
 
+    func refreshStatus() async {
+        guard case .ready = state, let expectedSignature, !checkingStatus else { return }
+        checkingStatus = true
+        defer { checkingStatus = false }
+        _ = try? await serverUp(expected: expectedSignature)
+    }
+
     func start() async {
-        state = .starting; stopped = false
-        guard let dir = projectDir() else { return fail("Shadow Studio can't find its folder. Rebuild the app with “Build Mac App.command”.") }
-        guard let source = try? Data(contentsOf: dir.appendingPathComponent("app.py")) else { return fail("Shadow Studio can't read its engine. Rebuild the app with “Build Mac App.command”.") }
+        guard !starting else { return }
+        starting = true
+        defer { starting = false }
+        state = .starting
+        connection = .unchecked
+        engineStatus = nil
+        guard let dir = projectDir() else { return fail("Shadow Studio can't find its folder. Rebuild the app with “Build Mac App.command”.", connection: .projectUnavailable) }
+        guard let source = try? Data(contentsOf: dir.appendingPathComponent("app.py")) else { return fail("Shadow Studio can't read its engine. Rebuild the app with “Build Mac App.command”.", connection: .projectUnavailable) }
         var signature = Data(dir.resolvingSymlinksInPath().path.utf8); signature.append(0); signature.append(source)
         let expected = SHA256.hash(data: signature).map { String(format: "%02x", $0) }.joined()
+        expectedSignature = expected
         let running: Bool
         do { running = try await serverUp(expected: expected) } catch { return fail(error.localizedDescription) }
         if !running {
-            guard FileManager.default.isExecutableFile(atPath: dir.appendingPathComponent(".venv/bin/python").path) else { return fail("First-time setup hasn't been done yet. Open “Start Shadow Studio.command” once, then open this app again.") }
-            guard ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return fail("FFmpeg is needed to read audio and video files. Install it with Homebrew: brew install ffmpeg") }
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            p.arguments = ["-c", "[[ -x /usr/bin/say ]] && .venv/bin/python create_sample.py; exec .venv/bin/python app.py"]
-            p.currentDirectoryURL = dir
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
-            env["HF_HOME"] = dir.appendingPathComponent("data/models").path
-            env["SHADOW_PORT"] = port
-            p.environment = env
-            FileManager.default.createFile(atPath: logURL.path, contents: nil)
-            if let log = try? FileHandle(forWritingTo: logURL) { p.standardOutput = log; p.standardError = log }
-            p.terminationHandler = { _ in Task { @MainActor in ServerManager.shared.stopped = true } }
-            do { try p.run() } catch { return fail("Shadow Studio couldn't start its local server.") }
-            process = p
+            if process?.isRunning != true {
+                guard FileManager.default.isExecutableFile(atPath: dir.appendingPathComponent(".venv/bin/python").path) else { return fail("First-time setup hasn't been done yet. Open “Start Shadow Studio.command” once, then click Try Again.", connection: .setupRequired) }
+                guard ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"].contains(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return fail("FFmpeg is needed to read audio and video files. Install it with Homebrew using brew install ffmpeg, then click Try Again.", connection: .missingFFmpeg) }
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                p.arguments = ["-c", "[[ -x /usr/bin/say ]] && .venv/bin/python create_sample.py; exec .venv/bin/python app.py"]
+                p.currentDirectoryURL = dir
+                var env = ProcessInfo.processInfo.environment
+                env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+                env["HF_HOME"] = dir.appendingPathComponent("data/models").path
+                env["SHADOW_PORT"] = port
+                p.environment = env
+                FileManager.default.createFile(atPath: logURL.path, contents: nil)
+                if let log = try? FileHandle(forWritingTo: logURL) { p.standardOutput = log; p.standardError = log }
+                do { try p.run() } catch { return fail("Shadow Studio couldn't start its local server.") }
+                process = p
+            }
             var waited = 0.0
             while true {
                 do { if try await serverUp(expected: expected) { break } } catch { return fail(error.localizedDescription) }
-                if stopped { return fail("The local server stopped while starting. Details are in ~/Library/Logs/Shadow Studio.log") }
+                if process?.isRunning != true { return fail("The local server stopped while starting. Details are in ~/Library/Logs/Shadow Studio.log") }
                 if waited > 120 { return fail("The local server is taking too long to start. Details are in ~/Library/Logs/Shadow Studio.log") }
                 try? await Task.sleep(nanoseconds: 250_000_000); waited += 0.25
             }
         }
-        guard let token = await API.fetchToken() else { return fail("Shadow Studio couldn't connect to its local server. Quit and open the app again.") }
+        guard let token = await API.fetchToken() else {
+            connection = .tokenUnavailable
+            return fail("Shadow Studio couldn't connect to its local server. Click Try Again, or quit and reopen Shadow Studio if the problem persists.")
+        }
         state = .ready(API(token: token))
     }
 
-    func fail(_ text: String) { state = .failed(text) }
+    struct DependencyFact: Identifiable {
+        let label: String
+        let value: String
+        var id: String { label }
+    }
+
+    var dependencyFacts: [DependencyFact] {
+        let ffmpeg = connection == .missingFFmpeg ? false : engineStatus?.ffmpeg
+        return [
+            DependencyFact(label: "FFmpeg", value: ffmpeg.map { $0 ? "Available" : "Missing" } ?? "Unknown"),
+            DependencyFact(label: "Speech model", value: engineStatus?.modelReady.map { $0 ? "Loaded" : "Not loaded" } ?? "Unknown"),
+            DependencyFact(label: "ElevenLabs CLI", value: engineStatus?.elevenLabsCLI.map { $0 ? "Available" : "Missing" } ?? "Unknown")
+        ]
+    }
+
+    var diagnosticSummary: String {
+        (["Shadow Studio engine diagnostics", "Engine status: \(connection.rawValue)"] +
+            dependencyFacts.map { "\($0.label): \($0.value)" }).joined(separator: "\n")
+    }
+
+    var setupHelp: String? {
+        if case .failed(let message) = state { return message }
+        guard case .ready = state else { return nil }
+        switch connection {
+        case .offline:
+            return "Quit and reopen Shadow Studio to reconnect to the local engine."
+        case .otherService:
+            return "Close the app using Shadow Studio’s port, then reopen Shadow Studio."
+        case .stale:
+            return "Stop the older engine with Control-C in its Terminal window, or quit the other copy of Shadow Studio. Then reopen this app."
+        default:
+            let steps = [
+                engineStatus?.ffmpeg == false ? "Install FFmpeg with brew install ffmpeg, then refresh status." : nil,
+                engineStatus?.modelReady == false ? "The first transcription loads the speech model and downloads it if it isn’t cached. Refresh status after it finishes." : nil,
+                engineStatus?.elevenLabsCLI == false ? "For PDF import, install the optional ElevenLabs CLI and run elevenlabs auth login in Terminal." : nil
+            ].compactMap { $0 }
+            return steps.isEmpty ? nil : steps.joined(separator: "\n\n")
+        }
+    }
+
+    private func fail(_ text: String, connection: EngineConnection? = nil) {
+        if let connection { self.connection = connection }
+        state = .failed(text)
+    }
     func stop() { process?.terminate() }
 }

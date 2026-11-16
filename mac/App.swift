@@ -16,6 +16,7 @@ import SwiftUI
 }
 
 private struct PracticeSettingsView: View {
+    @ObservedObject private var server = ServerManager.shared
     @AppStorage(PracticeDefaults.modeKey) private var mode = PracticeDefaults.mode
     @AppStorage(PracticeDefaults.speedKey) private var speed = PracticeDefaults.speed
     @AppStorage(PracticeDefaults.loopingKey) private var looping = PracticeDefaults.looping
@@ -56,13 +57,47 @@ private struct PracticeSettingsView: View {
                     Button("Refresh Status") { microphoneStatus = MicrophoneProblem.status }
                 }
             }
+            Section("Local engine") {
+                LabeledContent("Status", value: server.checkingStatus ? "Checking…" : server.connection.rawValue)
+                ForEach(server.dependencyFacts) { fact in
+                    LabeledContent(fact.label, value: fact.value)
+                }
+                if let message = server.setupHelp {
+                    Text(message).foregroundStyle(.secondary)
+                }
+                HStack {
+                    switch server.state {
+                    case .failed:
+                        Button("Try Again") { Task { await server.start() } }
+                    case .ready:
+                        Button("Refresh Status") { Task { await server.refreshStatus() } }
+                            .disabled(server.checkingStatus)
+                    case .starting:
+                        ProgressView().controlSize(.small)
+                    }
+                    CopyEngineDiagnosticsButton(server: server)
+                }
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 400)
+        .frame(width: 500, height: 600)
+        .task { await server.refreshStatus() }
         .onAppear { microphoneStatus = MicrophoneProblem.status }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             microphoneStatus = MicrophoneProblem.status
         }
+    }
+}
+
+private struct CopyEngineDiagnosticsButton: View {
+    @ObservedObject var server: ServerManager
+
+    var body: some View {
+        Button("Copy Diagnostics") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(server.diagnosticSummary, forType: .string)
+        }
+        .disabled(server.checkingStatus)
     }
 }
 
@@ -78,6 +113,7 @@ struct RootView: View {
                     Orb(seed: "shadow studio", size: 56)
                     Text(message).multilineTextAlignment(.center).frame(maxWidth: 460)
                     Button("Try again") { Task { await server.start() } }.buttonStyle(PillStyle(primary: true))
+                    CopyEngineDiagnosticsButton(server: server)
                 }.padding(40)
             case .ready(let api):
                 StudioHost(api: api)

@@ -389,8 +389,10 @@ def pdf_text(source):
     if len(re.findall(r'[^\W\d_]{2,}',text))<5: raise ValueError('No readable text was found in this PDF. Scanned pages are pictures of text; choose a PDF whose text you can select and copy.')
     return text[:text_cut(text,PDF_CHARS)].strip()
 
+def eleven_cli(): return shutil.which('elevenlabs') or '/opt/homebrew/bin/elevenlabs'
+
 def eleven(args, body=None):
-    cli=shutil.which('elevenlabs') or '/opt/homebrew/bin/elevenlabs'
+    cli=eleven_cli()
     if not Path(cli).exists(): raise ValueError('PDF import needs the ElevenLabs command-line tool. Install it, run “elevenlabs auth login” in Terminal, then try again.')
     try:
         result=subprocess.run([cli,*args,'--format','json','--no-extract'],input=body,capture_output=True,text=True,timeout=300)
@@ -661,7 +663,7 @@ def delete(lid:str):
     read_lesson(lid); shutil.rmtree(folder(lid)); return {'ok':True}
 
 @app.get('/api/status')
-def status(): return JSONResponse({'local':True,'modelReady':bool(models),'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists())},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})
+def status(): return JSONResponse({'local':True,'modelReady':bool(models),'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists()),'elevenLabsCLI':os.access(eleven_cli(),os.X_OK)},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})
 
 if __name__=='__main__':
     os.environ['PATH']='/opt/homebrew/bin:'+os.environ.get('PATH','')
