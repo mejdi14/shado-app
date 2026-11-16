@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CryptoKit
+import Darwin
 
 let port = ProcessInfo.processInfo.environment["SHADOW_PORT"] ?? "8765"
 let base = URL(string: "http://127.0.0.1:\(port)")!
@@ -22,9 +23,9 @@ final class API {
         return String(html[r]).components(separatedBy: "\"").dropLast().last
     }
 
-    func send(_ path: String, method: String = "GET", body: Data? = nil, contentType: String? = nil, file: URL? = nil) async throws -> Data {
+    func send(_ path: String, method: String = "GET", body: Data? = nil, contentType: String? = nil, file: URL? = nil, timeout: TimeInterval = 120) async throws -> Data {
         var req = URLRequest(url: URL(string: base.absoluteString + path)!)
-        req.httpMethod = method; req.timeoutInterval = 120
+        req.httpMethod = method; req.timeoutInterval = timeout
         req.setValue(token, forHTTPHeaderField: "X-Shadow-Token")
         if let contentType { req.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         let data: Data, response: URLResponse
@@ -40,11 +41,66 @@ final class API {
         return data
     }
 
-    func get<T: Decodable>(_ type: T.Type, _ path: String, method: String = "GET", json: Any? = nil, body: Data? = nil, contentType: String? = nil, file: URL? = nil) async throws -> T {
+    func get<T: Decodable>(_ type: T.Type, _ path: String, method: String = "GET", json: Any? = nil, body: Data? = nil, contentType: String? = nil, file: URL? = nil, timeout: TimeInterval = 120) async throws -> T {
         var payload = body, ctype = contentType
         if let json { payload = try JSONSerialization.data(withJSONObject: json); ctype = "application/json" }
-        let data = try await send(path, method: method, body: payload, contentType: ctype, file: file)
+        let data = try await send(path, method: method, body: payload, contentType: ctype, file: file, timeout: timeout)
         do { return try JSONDecoder().decode(T.self, from: data) } catch { throw AppError(message: "Shadow Studio couldn't read the server's reply. Restart the app and try again.") }
+    }
+
+    func exportBackup(to destination: URL, storage: URL) async throws {
+        var req = URLRequest(url: URL(string: base.absoluteString + "/api/backup/export")!, timeoutInterval: 600)
+        req.httpMethod = "POST"
+        req.setValue(token, forHTTPHeaderField: "X-Shadow-Token")
+        let (download, response) = try await URLSession.shared.download(for: req)
+        defer { try? FileManager.default.removeItem(at: download) }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200, http.mimeType == "application/zip" else {
+            let reply = try? FileHandle(forReadingFrom: download)
+            defer { try? reply?.close() }
+            let data = try reply?.read(upToCount: 4096) ?? Data()
+            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
+            throw AppError(message: detail ?? "Shadow Studio couldn’t create the backup.")
+        }
+        try Self.saveBackup(download, to: destination, storage: storage)
+    }
+
+    private static func saveBackup(_ download: URL, to destination: URL, storage: URL) throws {
+        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW
+        let folderError = AppError(message: "Choose a local folder outside Shadow Studio’s data folder, with no linked folders in its path.")
+        var practiceDirectory = stat()
+        guard destination.isFileURL, destination.path.hasPrefix("/"),
+              lstat(storage.path, &practiceDirectory) == 0,
+              practiceDirectory.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else { throw folderError }
+        var parent = open("/", flags)
+        guard parent >= 0 else { throw folderError }
+        defer { close(parent) }
+        for component in destination.deletingLastPathComponent().pathComponents.dropFirst() {
+            guard component != ".", component != ".." else { throw folderError }
+            let next = openat(parent, component, flags)
+            guard next >= 0 else { throw folderError }
+            close(parent)
+            parent = next
+            var info = stat()
+            guard fstat(parent, &info) == 0,
+                  info.st_dev != practiceDirectory.st_dev || info.st_ino != practiceDirectory.st_ino else { throw folderError }
+        }
+
+        let name = destination.lastPathComponent
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.utf8.contains(0) else { throw folderError }
+        let fileError = AppError(message: "The backup couldn’t be saved. Check available space and choose a new file in a writable folder.")
+        let temporary = ".shadow-backup-" + UUID().uuidString
+        let input = open(download.path, O_RDONLY | O_NOFOLLOW)
+        guard input >= 0 else { throw fileError }
+        defer { close(input) }
+        let output = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
+        guard output >= 0 else { throw fileError }
+        defer { close(output); unlinkat(parent, temporary, 0) }
+        guard fcopyfile(input, output, nil, copyfile_flags_t(COPYFILE_DATA)) == 0, fsync(output) == 0 else { throw fileError }
+        // The directory descriptor stays fixed and the final name must be new.
+        guard renameatx_np(parent, temporary, parent, name, UInt32(RENAME_EXCL)) == 0 else {
+            if errno == EEXIST { throw AppError(message: "A file already has this name. Choose a new name for the backup.") }
+            throw fileError
+        }
     }
 }
 

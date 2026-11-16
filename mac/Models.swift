@@ -28,6 +28,20 @@ struct Busy { var title: String; var message: String }
 struct Track: Codable { let energy: [Double]; let pitch: [Double?]; let speed: Double? }
 struct VoiceData: Codable { let hop: Double; let source: Track; let take: Track? }
 struct TrainingProgress: Codable { var completed: [String] }
+struct BackupRestoreResult: Decodable {
+    let restoredLessons: Int
+    let skippedLessons: Int
+    let skippedSample: Int
+    let trainingAdded: Int
+
+    var summary: String {
+        var result = ["Sessions restored: \(restoredLessons)."]
+        if skippedLessons > 0 { result.append("Existing session IDs skipped: \(skippedLessons).") }
+        if skippedSample > 0 { result.append("Your existing guided sample was kept.") }
+        if trainingAdded > 0 { result.append("Voice Training completions added: \(trainingAdded).") }
+        return result.joined(separator: " ")
+    }
+}
 
 func fmt(_ n: Double) -> String { String(format: "%02d:%02d", Int(n) / 60, Int(n) % 60) }
 

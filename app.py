@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parent
 os.environ.setdefault('HF_HOME', str(ROOT / 'data' / 'models'))
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 import urllib.request, json, re, secrets, shutil, subprocess, threading, time, uuid, math, ipaddress, socket, hashlib, base64, random, unicodedata
+import ctypes, errno, stat, struct, sys, zipfile
+from contextlib import contextmanager
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
@@ -13,8 +15,10 @@ from scipy.io import wavfile
 from scipy.signal import resample_poly
 from scipy.ndimage import minimum_filter1d, maximum_filter1d
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 DATA = ROOT / 'data'
 DATA.mkdir(exist_ok=True)
@@ -60,6 +64,12 @@ def ident(value):
 
 def folder(lid):
     return DATA / ident(lid)
+
+def new_lesson_folder():
+    lid = uuid.uuid4().hex
+    path = folder(lid)
+    with file_lock: path.mkdir()
+    return lid, path
 
 def read_lesson(lid):
     try: return json.loads((folder(lid)/'lesson.json').read_text())
@@ -264,7 +274,7 @@ def make_phrases(segments, audio):
 
 def job_start(action):
     jid=uuid.uuid4().hex
-    jobs[jid]={'state':'working','message':'Preparing audio…'}
+    with file_lock: jobs[jid]={'state':'working','message':'Preparing audio…'}
     def work():
         try:
             lid=action(jid)
@@ -302,11 +312,12 @@ def practice_summary(lesson):
 
 @app.get('/api/library')
 def library():
-    lessons=[]
-    for p in DATA.glob('*/lesson.json'):
-        try:
-            l=json.loads(p.read_text()); lessons.append({k:l[k] for k in ['id','title','source','created','duration','sample']} | {'language':l.get('language','en'),'count':len(l['phrases']),'practised':sum(bool(x.get('practised')) for x in l['phrases'])} | practice_summary(l))
-        except (FileNotFoundError,ValueError,KeyError): pass
+    with file_lock:
+        lessons=[]
+        for p in DATA.glob('*/lesson.json'):
+            try:
+                l=json.loads(p.read_text()); lessons.append({k:l[k] for k in ['id','title','source','created','duration','sample']} | {'language':l.get('language','en'),'count':len(l['phrases']),'practised':sum(bool(x.get('practised')) for x in l['phrases'])} | practice_summary(l))
+            except (FileNotFoundError,ValueError,KeyError): pass
     return sorted(lessons,key=lambda x:x['created'],reverse=True)
 
 def training_progress():
@@ -337,6 +348,408 @@ async def complete_training_exercise(request:Request):
             except OSError: raise HTTPException(500,'Progress could not be saved. Please try again.')
         return progress
 
+BACKUP_LIMIT = 1024**3
+BACKUP_FILES = 25_000
+BACKUP_LAYOUT = rb'lessons/[0-9a-f]{32}/(?:lesson\.json|audio\.wav|[0-9a-f]{32}\.wav)'
+BACKUP_PROGRESS = 'voice-training.json'
+BACKUP_MANIFEST = 'manifest.json'
+BACKUP_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+backup_lock = threading.Lock()
+
+def check_backup(valid):
+    if not valid: raise ValueError('Choose a valid Shadow Studio backup ZIP.')
+
+def backup_file_limit(name):
+    if name == BACKUP_MANIFEST: return 4096
+    if name == BACKUP_PROGRESS: return 128 * 1024
+    if name.endswith('/lesson.json'): return 16 * 1024**2
+    return 60 * 1024**2 if name.endswith('/audio.wav') else 2 * 1024**2
+
+def backup_json(stream):
+    def unique_object(pairs):
+        result = dict(pairs)
+        check_backup(len(result) == len(pairs))
+        return result
+    return json.load(stream, object_pairs_hook=unique_object)
+
+def backup_number(value, low, high):
+    return type(value) in (int, float) and low <= value <= high
+
+def backup_text(value, limit):
+    return isinstance(value, str) and len(value) <= limit and '\x00' not in value and len(value.encode('utf-8')) <= 4 * limit
+
+def backup_id(value):
+    return isinstance(value, str) and re.fullmatch(r'[0-9a-f]{32}', value) is not None
+
+def backup_object(value, fields):
+    check_backup(isinstance(value, dict) and value.keys() <= set(fields.split()))
+
+def backup_list(value, limit):
+    check_backup(isinstance(value, list) and len(value) <= limit)
+    return value
+
+def backup_phrase_times(value, duration):
+    check_backup(backup_number(value.get('start'), 0, duration + .2)
+        and backup_number(value.get('end'), value['start'], duration + .2)
+        and value['end'] > value['start'] and backup_text(value.get('text'), 5000))
+
+def backup_revision(value, duration):
+    backup_object(value, 'id start end text')
+    check_backup(backup_id(value.get('id')))
+    backup_phrase_times(value, duration)
+
+def backup_take(value, lid, duration):
+    backup_object(value, 'id audio accuracy rhythm intonation durationRatio heard words curves tips created playbackSpeed phraseRevision recordedSeconds legacy')
+    tid = value.get('id')
+    check_backup(backup_id(tid) and value.get('audio') == f'/api/take/{lid}/{tid}')
+    for key in ('accuracy', 'rhythm', 'intonation'):
+        score = value.get(key)
+        check_backup((key == 'intonation' and score is None) or (type(score) is int and 0 <= score <= 100))
+    for key, low, high in (('created', 0, 253402300799), ('playbackSpeed', .5, 1.5),
+                           ('recordedSeconds', 0, 35), ('durationRatio', 0, 1_000_000)):
+        check_backup(value.get(key) is None or backup_number(value[key], low, high))
+    check_backup('heard' not in value or backup_text(value['heard'], 5000))
+    check_backup(value.get('legacy') is None or type(value['legacy']) is bool)
+    if value.get('phraseRevision') is not None: backup_revision(value['phraseRevision'], duration)
+    for mark in backup_list(value.get('words'), 5000):
+        backup_object(mark, 'word match')
+        check_backup(backup_text(mark.get('word'), 5000) and type(mark.get('match')) is bool)
+    curves = value.get('curves')
+    backup_object(curves, 'original you')
+    for key in ('original', 'you'):
+        check_backup(all(backup_number(n, -120, 120) for n in backup_list(curves.get(key), 1000)))
+    check_backup(all(backup_text(s, 5000) for s in backup_list(value.get('tips'), 100)))
+
+def backup_lesson(value, lid):
+    backup_object(value, 'id title source created duration phrases sample language archivedRevisions takeHistory')
+    duration = value.get('duration')
+    check_backup(value.get('id') == lid and backup_text(value.get('title'), 160)
+        and backup_text(value.get('source'), 1024) and backup_number(value.get('created'), 0, 253402300799)
+        and backup_number(duration, 0, 1800) and type(value.get('sample')) is bool
+        and value.get('language', 'en') in ('en', 'fr'))
+    linked = set()
+    for phrase in backup_list(value.get('phrases'), 25_000):
+        backup_object(phrase, 'start end text words practised latest takes revision')
+        backup_phrase_times(phrase, duration)
+        check_backup(phrase.get('revision') is None or backup_id(phrase['revision']))
+        check_backup(phrase.get('practised') is None or type(phrase['practised']) is bool)
+        takes = phrase.get('takes')
+        check_backup(takes is None or (type(takes) is int and 0 <= takes <= 2**31-1))
+        if phrase.get('words') is not None:
+            for word in backup_list(phrase['words'], 5000):
+                backup_object(word, 'start end word')
+                check_backup(backup_text(word.get('word'), 5000)
+                    and backup_number(word.get('start'), 0, duration + 1)
+                    and backup_number(word.get('end'), 0, duration + 1))
+        if phrase.get('latest') is not None:
+            backup_take(phrase['latest'], lid, duration)
+            linked.add(phrase['latest']['id'] + '.wav')
+    archived = value.get('archivedRevisions', {})
+    check_backup(isinstance(archived, dict) and len(archived) <= BACKUP_FILES)
+    for key, revision in archived.items():
+        backup_revision(revision, duration)
+        check_backup(revision['id'] == key)
+    for take in backup_list(value.get('takeHistory', []), BACKUP_FILES):
+        backup_take(take, lid, duration)
+        linked.add(take['id'] + '.wav')
+    return value['sample'], linked
+
+def backup_progress(value):
+    backup_object(value, 'completed')
+    completed = backup_list(value.get('completed'), 1000)
+    check_backup(all(isinstance(x, str) and len(x) <= 80 and re.fullmatch(r'[a-z-]+\.[a-z0-9-]+', x) for x in completed))
+    return completed
+
+def backup_wav(stream, size, lesson_audio):
+    riff, length, kind = struct.unpack('<4sI4s', stream.read(12))
+    check_backup(riff == b'RIFF' and kind == b'WAVE' and length + 8 == size)
+    fmt = frames = None
+    for _ in range(64):
+        if stream.tell() == size: break
+        chunk, length = struct.unpack('<4sI', stream.read(8))
+        start = stream.tell()
+        end = start + length + (length % 2)
+        check_backup(end <= size)
+        if chunk == b'fmt ':
+            check_backup(fmt is None and length in (16, 18))
+            fmt = struct.unpack('<HHIIHH', stream.read(16))
+        if chunk == b'data':
+            check_backup(fmt is not None and frames is None and length % 2 == 0)
+            frames = length // 2
+        stream.seek(end)
+    # All versions store lesson and take audio as mono, 16 kHz, signed 16-bit PCM.
+    check_backup(stream.tell() == size and fmt == (1, 1, 16000, 32000, 2, 16)
+        and frames is not None and 0 < frames <= 16000 * (1800 if lesson_audio else 40))
+
+def validate_backup_file(stream, name, size, linked=None):
+    check_backup(0 <= size <= backup_file_limit(name))
+    if name == BACKUP_MANIFEST:
+        manifest = backup_json(stream)
+        check_backup(manifest == {'format': 'shadow-studio', 'version': 1}
+            and type(manifest['version']) is int)
+    elif name == BACKUP_PROGRESS:
+        return backup_progress(backup_json(stream))
+    elif name.endswith('/lesson.json'):
+        return backup_lesson(backup_json(stream), name.split('/')[1])
+    elif name.endswith('/audio.wav') or name.rsplit('/', 1)[-1] in (linked or ()):
+        backup_wav(stream, size, name.endswith('/audio.wav'))
+
+@contextmanager
+def backup_directory(path, parent=None):
+    fd = os.open(path, BACKUP_DIRECTORY, dir_fd=parent)
+    try: yield fd
+    finally: os.close(fd)
+
+@contextmanager
+def backup_source(directory, name):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(fd)
+        check_backup(stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+        yield stream, info.st_size
+
+def backup_temporary_file(directory):
+    name = '.backup-' + uuid.uuid4().hex
+    fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    try: os.unlink(name, dir_fd=directory)
+    except OSError:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, 'w+b')
+
+def backup_add_file(archive, directory, filename, name, linked=None):
+    with backup_source(directory, filename) as (stream, size):
+        value = validate_backup_file(stream, name, size, linked)
+        stream.seek(0)
+        if len(archive.filelist) >= BACKUP_FILES or archive.fp.tell() + size > BACKUP_LIMIT:
+            raise ValueError('This library exceeds the backup limit of 1 GiB or 25,000 files.')
+        with archive.open(name, 'w') as member:
+            remaining = size
+            while remaining:
+                chunk = stream.read(min(remaining, 1024**2))
+                check_backup(chunk)
+                remaining -= member.write(chunk)
+            check_backup(not stream.read(1))
+        return value
+
+def export_backup():
+    with backup_directory(DATA) as data_fd:
+        output = backup_temporary_file(data_fd)
+        try:
+            with file_lock, zipfile.ZipFile(output, 'w', allowZip64=False) as archive:
+                archive.writestr(BACKUP_MANIFEST, '{"format":"shadow-studio","version":1}')
+                if BACKUP_PROGRESS in os.listdir(data_fd):
+                    backup_add_file(archive, data_fd, BACKUP_PROGRESS, BACKUP_PROGRESS)
+                for lid in sorted(os.listdir(data_fd)):
+                    if not backup_id(lid): continue
+                    with backup_directory(lid, data_fd) as lesson_fd:
+                        names = os.listdir(lesson_fd)
+                        if 'lesson.json' not in names: continue  # Import in progress.
+                        _, linked = backup_add_file(archive, lesson_fd, 'lesson.json', f'lessons/{lid}/lesson.json')
+                        for name in names:
+                            if name == 'audio.wav' or re.fullmatch(r'[0-9a-f]{32}\.wav', name):
+                                backup_add_file(archive, lesson_fd, name, f'lessons/{lid}/{name}', linked)
+                        check_backup('audio.wav' in names)
+            size = output.tell()
+            if size > BACKUP_LIMIT: raise ValueError('This library exceeds the backup limit of 1 GiB.')
+            output.seek(0)
+            return output, size
+        except BaseException:
+            output.close()
+            raise
+
+def backup_member_count(source):
+    # Bound ZIP indexing before ZipFile allocates objects for the central directory.
+    source.seek(-22, os.SEEK_END)
+    signature, disk, start_disk, local, total, size, offset, comment = struct.unpack('<4s4H2IH', source.read(22))
+    check_backup(signature == b'PK\x05\x06' and disk == start_disk == comment == 0
+        and 0 < local == total <= BACKUP_FILES and size <= 8 * 1024**2
+        and offset + size == source.tell() - 22)
+    return total
+
+def stage_backup(source, stage_fd):
+    total = backup_member_count(source)
+    members = set()
+    lessons = {}
+    progress = []
+    written = 0
+    with zipfile.ZipFile(source) as archive:
+        check_backup(len(archive.infolist()) == total)
+        for member in archive.infolist():
+            name = member.orig_filename
+            check_backup(name in (BACKUP_MANIFEST, BACKUP_PROGRESS) or re.fullmatch(BACKUP_LAYOUT, name.encode('ascii')))
+            check_backup(name not in members and not member.flag_bits
+                and stat.S_IFMT(member.external_attr >> 16) in (0, stat.S_IFREG)
+                and not member.external_attr & 0x10 and member.compress_type == zipfile.ZIP_STORED
+                and member.compress_size == member.file_size and 0 <= member.file_size <= backup_file_limit(name)
+                and (member.file_size or member.CRC == 0))
+            members.add(name)
+            written += member.file_size
+            check_backup(written <= BACKUP_LIMIT)
+            if '/' not in name:
+                with archive.open(member) as stream:
+                    with backup_temporary_file(stage_fd) as raw:
+                        shutil.copyfileobj(stream, raw, 1024**2)
+                        check_backup(raw.tell() == member.file_size)
+                        raw.seek(0)
+                        value = validate_backup_file(raw, name, member.file_size)
+                        if name == BACKUP_PROGRESS: progress = value
+                continue
+            _, lid, filename = name.split('/')
+            if lid not in lessons:
+                os.mkdir(lid, 0o700, dir_fd=stage_fd)
+                lessons[lid] = {}
+            with backup_directory(lid, stage_fd) as lesson_fd, archive.open(member) as stream:
+                fd = os.open(filename, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=lesson_fd)
+                with os.fdopen(fd, 'w+b') as raw:
+                    shutil.copyfileobj(stream, raw, 1024**2)
+                    check_backup(raw.tell() == member.file_size)
+                    raw.seek(0)
+                    lessons[lid][filename] = validate_backup_file(raw, name, member.file_size)
+                    os.fsync(fd)
+    samples = {}
+    for lid, files in lessons.items():
+        check_backup({'lesson.json', 'audio.wav'} <= files.keys())
+        samples[lid], linked = files['lesson.json']
+        # Older libraries may have orphan WAVs or history entries whose audio is
+        # already missing. Preserve the files and links as they were saved.
+        with backup_directory(lid, stage_fd) as lesson_fd:
+            for name in files.keys() & linked:
+                with backup_source(lesson_fd, name) as (raw, size):
+                    backup_wav(raw, size, False)
+    check_backup(BACKUP_MANIFEST in members)
+    return samples, progress
+
+def backup_sample_exists(data_fd):
+    for lid in os.listdir(data_fd):
+        if not backup_id(lid): continue
+        try:
+            with backup_directory(lid, data_fd) as lesson_fd:
+                with backup_source(lesson_fd, 'lesson.json') as (stream, size):
+                    check_backup(size <= backup_file_limit('lesson.json'))
+                    lesson = backup_json(stream)
+                    check_backup(isinstance(lesson, dict))
+                    if lesson.get('sample'): return True
+        except FileNotFoundError:
+            continue
+    return False
+
+def publish_lesson(stage_fd, data_fd, lid):
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == 'darwin':
+        rename, exclusive = libc.renameatx_np, 4  # RENAME_EXCL
+    elif sys.platform == 'linux' and hasattr(libc, 'renameat2'):
+        rename, exclusive = libc.renameat2, 1  # RENAME_NOREPLACE
+    else: raise OSError('Exclusive directory moves are unavailable.')
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    name = lid.encode('ascii')
+    if rename(stage_fd, name, data_fd, name, exclusive) == 0: return True
+    error = ctypes.get_errno()
+    if error == errno.EEXIST: return False
+    raise OSError(error, os.strerror(error))
+
+def publish_backup(data_fd, stage_fd, lessons, progress):
+    with file_lock:
+        if any(job['state'] == 'working' for job in jobs.values()):
+            raise HTTPException(409, 'Let the current practice jobs finish, then restore the backup again.')
+        check_backup(os.path.samestat(os.stat(DATA, follow_symlinks=False), os.fstat(data_fd)))
+        skip_sample = any(lessons.values()) and backup_sample_exists(data_fd)
+        adds = 0
+        if progress:
+            try:
+                with backup_source(data_fd, BACKUP_PROGRESS) as (current, size):
+                    saved = validate_backup_file(current, BACKUP_PROGRESS, size)
+            except FileNotFoundError:
+                saved = []
+            new = list(dict.fromkeys(x for x in progress if x not in saved))
+            adds = len(new)
+            if len(saved) + adds > 1000:
+                raise HTTPException(409, 'Voice Training progress would exceed 1,000 completions. No sessions were restored.')
+            if adds:
+                fd = os.open(BACKUP_PROGRESS, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=stage_fd)
+                with os.fdopen(fd, 'w', encoding='utf-8') as out:
+                    json.dump({'completed': saved + new}, out)
+                    out.flush()
+                    os.fsync(fd)
+        restored = []
+        skipped = 0
+        skipped_sample = 0
+        try:
+            for lid, sample in lessons.items():
+                if sample and skip_sample:
+                    skipped_sample += 1
+                    continue
+                if publish_lesson(stage_fd, data_fd, lid):
+                    restored.append(lid)
+                    if sample: skip_sample = True
+                else: skipped += 1
+            if adds: os.replace(BACKUP_PROGRESS, BACKUP_PROGRESS, src_dir_fd=stage_fd, dst_dir_fd=data_fd)
+        except OSError as exc:
+            try:
+                for lid in reversed(restored):
+                    os.rename(lid, lid, src_dir_fd=data_fd, dst_dir_fd=stage_fd)
+            except OSError:
+                raise HTTPException(500, 'Restore was interrupted. Some complete sessions may be present. Retry the same backup to add the rest.') from exc
+            raise
+    return {'restoredLessons': len(restored), 'skippedLessons': skipped, 'skippedSample': skipped_sample, 'trainingAdded': adds}
+
+def restore_backup(source, data_fd):
+    stage = '.restore-' + uuid.uuid4().hex
+    os.mkdir(stage, 0o700, dir_fd=data_fd)
+    try:
+        with backup_directory(stage, data_fd) as stage_fd:
+            lessons, progress = stage_backup(source, stage_fd)
+            return publish_backup(data_fd, stage_fd, lessons, progress)
+    finally:
+        shutil.rmtree(stage, dir_fd=data_fd, ignore_errors=True)
+
+def backup_local(request):
+    if (request.headers.get('host') not in {f'127.0.0.1:{PORT}', f'localhost:{PORT}'}
+        or not request.client or request.client.host not in ('127.0.0.1', '::1')):
+        raise HTTPException(403, 'Use Shadow Studio on the Mac that stores the practice files.')
+    if not backup_lock.acquire(blocking=False):
+        raise HTTPException(409, 'Another backup or restore is in progress. Try again when it finishes.')
+
+@app.post('/api/backup/export')
+async def backup_export(request: Request):
+    backup_local(request)
+    try:
+        stream, size = await run_in_threadpool(export_backup)
+    except (ValueError, OSError, RecursionError, struct.error) as exc:
+        message = str(exc) if isinstance(exc, ValueError) and str(exc).startswith('This library exceeds') else 'The backup could not be created. Check the saved files and free disk space.'
+        raise HTTPException(422, message) from exc
+    finally:
+        backup_lock.release()
+    async def download():
+        with stream:
+            while chunk := await run_in_threadpool(stream.read, 1024**2):
+                yield chunk
+    return StreamingResponse(download(), media_type='application/zip', headers={
+        'Content-Length': str(size), 'Content-Disposition': 'attachment; filename="Shadow Studio Backup.zip"'
+    }, background=BackgroundTask(stream.close))
+
+@app.post('/api/backup/restore')
+async def backup_restore(request: Request):
+    backup_local(request)
+    try:
+        length = request.headers.get('content-length', '')
+        if length.isdecimal() and int(length) > BACKUP_LIMIT:
+            raise HTTPException(413, 'Choose a backup ZIP of 1 GiB or less.')
+        with backup_directory(DATA) as data_fd, backup_temporary_file(data_fd) as source:
+            size = 0
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > BACKUP_LIMIT: raise HTTPException(413, 'Choose a backup ZIP of 1 GiB or less.')
+                if chunk: await run_in_threadpool(source.write, chunk)
+            check_backup(size >= 22)
+            return await run_in_threadpool(restore_backup, source, data_fd)
+    except (ValueError, zipfile.BadZipFile, struct.error, RecursionError, EOFError) as exc:
+        raise HTTPException(422, 'This backup is invalid or uses an unsupported format. No sessions were restored.') from exc
+    except OSError as exc:
+        raise HTTPException(500, 'The backup could not be restored. Check your free disk space and storage folder.') from exc
+    finally:
+        backup_lock.release()
+
 @app.get('/api/lesson/{lid}')
 def lesson(lid:str): return public_lesson(read_lesson(lid))
 
@@ -365,7 +778,7 @@ async def youtube(request:Request):
     canonical='https://www.youtube.com/watch?v='+vid
     def action(jid):
         import yt_dlp
-        lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
+        lid,path=new_lesson_folder()
         jobs[jid]['cleanup']=str(path)
         jobs[jid]['message']='Importing YouTube audio…'
         def limit(info, *, incomplete=False):
@@ -390,7 +803,7 @@ async def youtube(request:Request):
 @app.post('/api/upload')
 async def upload(file:UploadFile=File(...), title:str=Form(''), language:str=Form('en')):
     language=import_language(language)
-    lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
+    lid,path=new_lesson_folder()
     source=path/'upload.media'; size=0
     with source.open('wb') as out:
         while chunk:=await file.read(1024*1024):
@@ -501,7 +914,7 @@ def pdf_voice_preview(vid:str, language:str='en'):
 @app.post('/api/pdf')
 async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form(''), language:str=Form('en')):
     language=import_language(language)
-    lid=uuid.uuid4().hex; path=folder(lid); path.mkdir()
+    lid,path=new_lesson_folder()
     source=path/'upload.pdf'; size=0
     with source.open('wb') as out:
         while chunk:=await file.read(1024*1024):
@@ -543,7 +956,6 @@ async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('
 
 @app.post('/api/resplit/{lid}')
 def resplit(lid:str):
-    if read_lesson(lid).get('sample'): raise HTTPException(400,'The guided sample keeps its own phrases.')
     def action(jid):
         path=folder(lid)
         jobs[jid]['message']='Finding new phrases… Long sessions can take a few minutes.'
@@ -559,7 +971,9 @@ def resplit(lid:str):
             lesson['phrases']=[p | {'revision':uuid.uuid4().hex} for p in phrases]
             save_lesson(lesson)
         return lid
-    return job_start(action)
+    with file_lock:
+        if read_lesson(lid).get('sample'): raise HTTPException(400,'The guided sample keeps its own phrases.')
+        return job_start(action)
 
 @app.patch('/api/phrase/{lid}/{index}')
 async def edit(lid:str,index:int,request:Request):

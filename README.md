@@ -78,7 +78,13 @@ Audio, recordings, model files, and lesson information stay in this folder's **d
 
 In the Mac app, open **Settings → Local storage** to see the file sizes for saved lessons and takes, including the guided sample. **Lesson files** includes lesson audio and metadata such as transcripts, edits and embedded feedback. **Take files** includes recording audio and separate take metadata. The totals exclude temporary files, Voice Training progress and cached examples, and speech models. Use **Refresh Usage** after changing your library and **Show Storage Folder** to open **data/** in Finder.
 
-**Delete session…** asks for confirmation before permanently removing the selected session folder, including its lesson audio, transcript, edits, recordings and feedback. Voice Training progress, cached examples and speech models are stored separately. Back up the **data/** folder if you want to keep your practice.
+**Export Backup…** and **Restore Backup…** are under **Settings → Local backup** on Mac. In the browser on the Mac that runs the engine, use the backup buttons in **Your library**. Mac export asks for a new file outside **data/**. Browser export uses your browser’s download location or Save As preference.
+
+The ZIP contains lesson metadata, transcripts and edits, lesson audio, saved feedback and take WAVs, and Voice Training completions. Older unlinked take WAVs are preserved on disk. Practice settings and last-phrase positions belong to each client. Jobs, tokens, temporary recordings, speech models and cached training examples are excluded.
+
+Restore validates the whole archive and adds each new session as a complete folder. It skips IDs that already exist, keeps the guided sample already on the Mac (including that sample’s own takes), and adds only missing Voice Training completions. On an interruption, retry the same backup to add any remaining sessions. Let current lesson jobs finish before restoring. Backups support up to 1 GiB and 25,000 files. Allow free space for the archive and staged files during restore.
+
+**Delete session…** asks for confirmation before permanently removing the selected session folder, including its lesson audio, transcript, edits, recordings and feedback. Voice Training progress, cached examples and speech models are stored separately.
 
 ## YouTube imports
 

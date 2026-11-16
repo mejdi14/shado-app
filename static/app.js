@@ -6,7 +6,8 @@ const original=$('#originalAudio'), take=$('#takeAudio'), historyAudio=$('#histo
 const fmt=n=>`${Math.floor(n/60).toString().padStart(2,'0')}:${Math.floor(n%60).toString().padStart(2,'0')}`;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(msg){$('#toast').textContent=msg;$('#toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').hidden=true,6500)}
-async function api(path,options={}){options.headers={...(options.headers||{}),'X-Shadow-Token':token};const r=await fetch(path,options);if(!r.ok){let x;try{x=await r.json()}catch{}throw Object.assign(new Error(typeof x?.detail==='string'?x.detail:'Something went wrong. Please try again.'),{status:r.status})}return r.json()}
+async function apiResponse(path,options={}){options.headers={...(options.headers||{}),'X-Shadow-Token':token};const r=await fetch(path,options);if(!r.ok){let x;try{x=await r.json()}catch{}throw Object.assign(new Error(typeof x?.detail==='string'?x.detail:'Something went wrong. Please try again.'),{status:r.status})}return r}
+async function api(path,options){return (await apiResponse(path,options)).json()}
 function json(method,data){return{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}}
 function guarded(fn){return async(...args)=>{try{await fn(...args)}catch(e){toast(e.message)}}}
 function setBusy(value,title='Preparing your practice',message='Preparing audio…'){busy=value;$('#jobOverlay').hidden=!value;$('#jobTitle').textContent=title;$('#jobMessage').textContent=message;$('main').inert=value;$('.sidebar').inert=value}
@@ -81,6 +82,33 @@ function renderLibrary(){
   $$('#libraryGrid [data-lesson]').forEach(b=>b.onclick=openLibrarySession);
 }
 async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#librarySample').hidden=!sampleId;libraryItems=list;renderLibrary();renderPracticeProgress();if(current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
+if(['127.0.0.1','localhost'].includes(location.hostname)){
+  const exportButton=$('#exportBackup'),restoreButton=$('#restoreBackup'),input=$('#backupFile'),status=$('#backupStatus');
+  exportButton.hidden=restoreButton.hidden=false;
+  const runBackup=async(title,action)=>{if(busy||recording||starting||stopping)return;status.hidden=true;setBusy(true,title,'Keep this page open…');try{status.textContent=await action()}catch(e){status.textContent=e.message}finally{setBusy(false);status.hidden=false}};
+  exportButton.onclick=()=>runBackup('Preparing your backup',async()=>{
+    const response=await apiResponse('/api/backup/export',{method:'POST'});
+    const url=URL.createObjectURL(await response.blob());
+    const link=document.createElement('a');link.href=url;link.download='Shadow Studio Backup.zip';document.body.append(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    return 'Backup sent to your browser’s downloads.';
+  });
+  restoreButton.onclick=()=>input.click();
+  input.onchange=()=>{
+    const file=input.files[0];input.value='';
+    if(!file||!confirm('Restore this backup? Existing session IDs and the current guided sample will be kept. Missing Voice Training completions will be added.'))return;
+    runBackup('Restoring your backup',async()=>{
+      if(file.size>1024**3)throw new Error('Choose a backup ZIP of 1 GiB or less.');
+      const result=await api('/api/backup/restore',{method:'POST',headers:{'Content-Type':'application/zip'},body:file});
+      const summary=[`Sessions restored: ${result.restoredLessons}.`];
+      if(result.skippedLessons)summary.push(`Existing session IDs skipped: ${result.skippedLessons}.`);
+      if(result.skippedSample)summary.push('Your existing guided sample was kept.');
+      if(result.trainingAdded)summary.push(`Voice Training completions added: ${result.trainingAdded}.`);
+      try{await refreshLibrary()}catch{summary.push('Reload the page to refresh your library.')}
+      return summary.join(' ');
+    });
+  };
+}
 $('#libraryControls').onsubmit=e=>e.preventDefault();
 $('#librarySearch').oninput=renderLibrary;
 for(const selector of ['#libraryLanguage','#libraryProgress','#librarySort'])$(selector).onchange=renderLibrary;

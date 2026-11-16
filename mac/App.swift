@@ -1,4 +1,7 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+private let backupRestored = Notification.Name("ShadowStudioBackupRestored")
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
@@ -26,6 +29,8 @@ private struct PracticeSettingsView: View {
     @State private var storageRefresh = 0
     @State private var checkingStorage = true
     @State private var storageRevealFailed = false
+    @State private var backupWorking = false
+    @State private var backupMessage: String?
 
     var body: some View {
         Form {
@@ -106,6 +111,18 @@ private struct PracticeSettingsView: View {
             } footer: {
                 Text("Lesson files include saved session audio and metadata, including transcripts, edits and embedded feedback. Take files include recordings and separate take metadata. The guided sample counts toward usage. Temporary files, Voice Training progress and cached examples, and speech models are excluded. To free space, open a session and choose Delete session…")
             }
+            Section("Local backup") {
+                HStack {
+                    Button("Export Backup…", action: exportBackup)
+                        .disabled(backupWorking || backupAPI == nil || storageFolder == nil)
+                    Button("Restore Backup…", action: restoreBackup)
+                        .disabled(backupWorking || backupAPI == nil)
+                    if backupWorking { ProgressView().controlSize(.small) }
+                }
+                Text("Back up sessions, takes, and Voice Training progress to a ZIP of up to 1 GiB. Restore skips existing session IDs, keeps your current guided sample, and adds any missing Voice Training completions.")
+                    .foregroundStyle(.secondary)
+                if let backupMessage { Text(backupMessage).textSelection(.enabled) }
+            }
         }
         .formStyle(.grouped)
         .frame(width: 500, height: 600)
@@ -135,6 +152,55 @@ private struct PracticeSettingsView: View {
         var isDirectory: ObjCBool = false
         storageRevealFailed = !FileManager.default.fileExists(atPath: storageFolder.path, isDirectory: &isDirectory)
             || !isDirectory.boolValue || !NSWorkspace.shared.open(storageFolder)
+    }
+
+    private var backupAPI: API? {
+        if case .ready(let api) = server.state { return api }
+        return nil
+    }
+
+    private func exportBackup() {
+        guard !backupWorking, let api = backupAPI, let storage = storageFolder else { return }
+        let picker = NSSavePanel()
+        picker.allowedContentTypes = [.zip]
+        picker.nameFieldStringValue = "Shadow Studio Backup.zip"
+        picker.message = "Choose a new file outside the practice storage folder."
+        picker.begin { reply in
+            guard reply == .OK, let destination = picker.url else { return }
+            runBackup {
+                try await api.exportBackup(to: destination, storage: storage)
+                return "Backup saved."
+            }
+        }
+    }
+
+    private func restoreBackup() {
+        guard !backupWorking, let api = backupAPI else { return }
+        let picker = NSOpenPanel()
+        picker.allowedContentTypes = [.zip]
+        picker.prompt = "Restore"
+        picker.message = "Choose a Shadow Studio backup. Existing sessions and the current guided sample will be kept."
+        picker.begin { reply in
+            guard reply == .OK, let archive = picker.url else { return }
+            runBackup {
+                let result = try await api.get(BackupRestoreResult.self, "/api/backup/restore", method: "POST",
+                                               contentType: "application/zip", file: archive, timeout: 600)
+                storageRefresh += 1
+                NotificationCenter.default.post(name: backupRestored, object: nil)
+                return result.summary
+            }
+        }
+    }
+
+    private func runBackup(_ operation: @escaping @MainActor () async throws -> String) {
+        guard !backupWorking else { return }
+        backupWorking = true
+        backupMessage = nil
+        Task { @MainActor in
+            defer { backupWorking = false }
+            do { backupMessage = try await operation() }
+            catch { backupMessage = error.localizedDescription }
+        }
     }
 }
 
@@ -254,5 +320,11 @@ struct StudioHost: View {
             Button("Re-split phrases") { Task { await store.resplitLesson() } }
         } message: { Text("The audio is transcribed again and replaces the current phrases and edits. Practice starts at phrase one. Earlier recordings and feedback stay in Take history.") }
         .task { await store.start() }
+        .onReceive(NotificationCenter.default.publisher(for: backupRestored)) { _ in
+            Task {
+                await store.guarded { try await store.refreshLibrary() }
+                await training.loadProgress()
+            }
+        }
     }
 }
