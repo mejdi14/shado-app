@@ -20,9 +20,11 @@ The local speech model and dependencies are already installed in this folder. Ke
 4. Choose **Recall** to hide the text and practise from memory.
 5. Choose **Shadow**, put on headphones, and record while the original plays. Recording stops at the end of the phrase. Other modes let you stop the recording yourself; takes are limited to 34 seconds.
 6. Review feedback, replay your take, or listen to **Original → you**.
-7. Use **Edit phrase** to correct transcription or adjust its start/end times. This clears the old feedback for that phrase. To redo the automatic split for a whole session (for example one imported with an older version), choose **Re-split phrases** (↻ in the browser, the session menu in the Mac and mobile apps). The audio is transcribed again, and that session's phrase edits and feedback are cleared. Your library saves sessions and their most recent feedback between launches.
+7. Use **Edit phrase** to correct transcription or adjust its start/end times. Changing the text or timing starts a new phrase version with fresh progress. To redo the automatic split for a whole session (for example one imported with an older version), choose **Re-split phrases** (↻ in the browser, the session menu in the Mac and mobile apps). The audio is transcribed again, replacing the current phrases and edits and restarting phrase progress. Earlier recordings and feedback stay in the session’s history.
 
 Choose **Try the guided sample** to practise with a built-in Mac voice. Listen to a phrase, record it with your microphone, then choose **Your take** to replay it or **Original → you** to compare. If the sample is unavailable, restart the local engine on the Mac and reopen the client, or use the import action to add your own clip.
+
+On Mac and in the browser, open **Take history** from the practice card to replay recordings for the session and review their saved feedback. Each take shows its date, recording speed and original phrase text and timing. Compare attempts from the same phrase version and speed. Older feedback still linked to a phrase appears as a **Legacy take**. Audio files without a saved phrase link remain on disk. Mobile shows the latest feedback for the current phrase version.
 
 On Mac, Shadow Studio reopens the last session at its selected phrase and remembers the selected phrase for each session. From Home or Voice Training, choose **Continue** in the sidebar to return to the displayed session and phrase. If the saved phrase changed and can no longer be matched, the session opens at phrase one. **Re-split phrases** also starts the session at phrase one.
 
@@ -84,7 +86,7 @@ Use content you have permission to import. Links can fail because of YouTube acc
 - If the microphone was denied, enable it for this local address in your browser's website settings.
 - If YouTube refuses a link, upload a file you can use instead.
 - If the port is occupied, start with `SHADOW_PORT=8766` or stop the other copy.
-- After an engine update, stop **Start Shadow Studio.command** with Control-C in its Terminal window, quit the Mac app, and reopen it. Rebuilding the Mac app does not restart an engine that was launched in Terminal. The Mac app now checks that the running engine matches this folder's current code and reports an outdated engine instead of silently reusing it. Existing lessons need **Re-split phrases** to get new boundaries; this clears their phrase edits and feedback.
+- After an engine update, stop **Start Shadow Studio.command** with Control-C in its Terminal window, quit the Mac app, and reopen it. Rebuilding the Mac app does not restart an engine that was launched in Terminal. The Mac app now checks that the running engine matches this folder's current code and reports an outdated engine instead of silently reusing it. Use **Re-split phrases** to get new boundaries for existing sessions. It replaces the current phrases and edits and keeps linked recordings and feedback in **Take history**.
 - On a different Mac, the launcher needs Python 3.12+ and FFmpeg. The launcher installs Python dependencies into its own environment when needed. Its initial setup needs an internet connection.
 
 Speech transcription uses [faster-whisper](https://github.com/SYSTRAN/faster-whisper), with the English base model. No paid services are required.

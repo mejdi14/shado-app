@@ -60,6 +60,8 @@ enum PracticeDefaults {
     @Published var isPlaying = false
     @Published var position = 0.0
     @Published var isTakePlaying = false
+    @Published private(set) var playingTakeID: String?
+    @Published private(set) var takePlaybackError: String?
     @Published var recording = false
     @Published var starting = false
     @Published var microphoneProblem: MicrophoneProblem?
@@ -87,6 +89,7 @@ enum PracticeDefaults {
 
     var original: AVAudioPlayer?
     var takePlayer: AVAudioPlayer?
+    private var takePlaybackRequest: UUID?
     var recorder: AVAudioRecorder?
     var recordFile: URL?
     var engine: AVAudioEngine?
@@ -215,12 +218,13 @@ enum PracticeDefaults {
         voiceTask?.cancel()
         stopPlayback(); setMode(mode, force: true)
         voice = nil; voiceFailed = false; position = 0
-        guard let l = lesson, phrase != nil else { live = nil; return }
+        guard let l = lesson, let phrase else { live = nil; return }
         let id = l.id, ix = index
+        let revision = phrase.revision.map { "?revision=\($0)" } ?? ""
         if live?.key != "\(id):\(ix)" { live = nil }
         voiceTask = Task {
-            let result = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)")
-            guard !Task.isCancelled, lesson?.id == id, index == ix, let ph = phrase else { return }
+            let result = try? await api.get(VoiceData.self, "/api/voice/\(id)/\(ix)\(revision)")
+            guard !Task.isCancelled, lesson?.id == id, index == ix, let ph = self.phrase else { return }
             guard let v = result else { voiceFailed = true; return }
             let src = makeTrack(v.source.energy, v.source.pitch) { Double($0 + 1) * v.hop }
             let sp = v.take?.speed ?? 1
@@ -268,6 +272,7 @@ enum PracticeDefaults {
         if isPlaying, let p = original, let ph = phrase { position = min(max(0, p.currentTime - ph.start), ph.end - ph.start) }
         original?.pause(); takePlayer?.stop()
         isPlaying = false; isTakePlaying = false
+        playingTakeID = nil; takePlaybackRequest = nil; takePlaybackError = nil
     }
 
     func playOriginal(once: Bool = false, rate: Double? = nil, excerpt: ClosedRange<Double>? = nil, onDone: (() -> Void)? = nil) {
@@ -305,14 +310,23 @@ enum PracticeDefaults {
         } else { playOriginal() }
     }
 
-    func playTake() async {
-        guard let r = phrase?.latest else { return }
+    func playTake(_ result: TakeResult? = nil) async {
+        guard let r = result ?? phrase?.latest else { return }
         stopPlayback()
-        await guarded {
+        let request = UUID()
+        takePlaybackRequest = request
+        do {
             let data = try await api.send(r.audio)
+            guard takePlaybackRequest == request else { return }
             let p = try AVAudioPlayer(data: data)
             p.delegate = self; takePlayer = p
-            p.play(); isTakePlaying = true
+            guard p.play() else { throw AppError(message: "This take could not be played.") }
+            playingTakeID = r.id; isTakePlaying = true
+        } catch {
+            if takePlaybackRequest == request {
+                if result == nil { show(error.localizedDescription) }
+                else { takePlaybackError = error.localizedDescription }
+            }
         }
     }
 
@@ -325,7 +339,10 @@ enum PracticeDefaults {
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        Task { @MainActor in self.isTakePlaying = false }
+        Task { @MainActor in
+            guard self.takePlayer === player else { return }
+            self.playingTakeID = nil; self.isTakePlaying = false
+        }
     }
 
     // MARK: Recording
@@ -405,15 +422,21 @@ enum PracticeDefaults {
     func finishRecording(_ url: URL) async {
         guard let l = lesson else { return }
         let ix = index, speedUsed = mode == .shadow ? speed : 1
+        let revision = phrase?.revision.map { "&revision=\($0)" } ?? ""
         defer { try? FileManager.default.removeItem(at: url) }
         await guarded {
-            defer { busy = nil }
+            defer { busy = nil; live = nil }
             busy = Busy(title: "Reviewing your take", message: "Listening to your recording…")
-            let j = try await api.get(JobStart.self, "/api/record/\(l.id)/\(ix)?speed=\(speedUsed)", method: "POST", contentType: "audio/wav", file: url)
+            let j = try await api.get(JobStart.self, "/api/record/\(l.id)/\(ix)?speed=\(speedUsed)\(revision)", method: "POST", contentType: "audio/wav", file: url)
             _ = try await waitJob(j.jobId, "Reviewing your take")
-            try await loadLesson(l.id, at: ix)
-            showFeedback = true
-            show("Your feedback is ready. Listen back, then choose one detail to practise.")
+            live = nil
+            try await loadLesson(l.id)
+            if j.takeId == nil || phrase?.latest?.id == j.takeId {
+                showFeedback = true
+                show("Your feedback is ready. Listen back, then choose one detail to practise.")
+            } else {
+                show("Your recording and feedback are saved in Take history.")
+            }
         }
     }
 
@@ -514,12 +537,14 @@ enum PracticeDefaults {
     }
 
     func savePhrase(text: String, start: Double, end: Double) async -> String? {
-        guard let l = lesson, phrase != nil else { return nil }
+        guard let l = lesson, let phrase else { return nil }
         do {
-            lesson = try await api.get(Lesson.self, "/api/phrase/\(l.id)/\(index)", method: "PATCH", json: ["text": text, "start": start, "end": end])
+            var body: [String: Any] = ["text": text, "start": start, "end": end]
+            if let revision = phrase.revision { body["revision"] = revision }
+            lesson = try await api.get(Lesson.self, "/api/phrase/\(l.id)/\(index)", method: "PATCH", json: body)
             savePosition()
             phraseChanged()
-            show("Phrase updated. Record a new take to compare with this version.")
+            show("Phrase saved.")
             return nil
         } catch { return error.localizedDescription }
     }

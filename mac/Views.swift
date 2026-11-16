@@ -442,6 +442,7 @@ struct EmptyStudio: View {
 }
 
 struct PracticePanel: View {
+    @State private var showTakeHistory = false
     @EnvironmentObject var s: Store
     let lesson: Lesson
     let phrase: Phrase
@@ -506,11 +507,17 @@ struct PracticePanel: View {
                     comparison
                 }
             }
+            Button { s.stopPlayback(); showTakeHistory = true } label: {
+                Label("Take history", systemImage: "clock.arrow.circlepath")
+            }.buttonStyle(PillStyle(compact: true)).disabled(s.locked)
             Rectangle().fill(Color.line).frame(height: 1)
             if phrase.latest != nil { NextStepView(phrase: phrase) }
             else { deliveryGuide }
             VoiceMapView(phrase: phrase)
         }.padding(24).panel(16)
+            .sheet(isPresented: $showTakeHistory, onDismiss: { s.stopPlayback() }) {
+                TakeHistorySheet().environmentObject(s)
+            }
     }
 
     var controls: some View {
@@ -858,6 +865,69 @@ struct PhraseList: View {
     }
 }
 
+struct TakeHistorySheet: View {
+    @EnvironmentObject var s: Store
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let takes = s.lesson?.takeHistory ?? []
+        let active = Set(s.lesson?.phrases.compactMap(\.revision) ?? [])
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Take history").font(.title2)
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            if takes.isEmpty {
+                Text("No saved takes in this session yet.").foregroundStyle(.secondary)
+            } else {
+                muted("Practice estimates. Compare takes from the same phrase version and speed.")
+                if let error = s.takePlaybackError {
+                    Text(error).foregroundStyle(.red)
+                }
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        ForEach(takes) { take in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    if let created = take.created {
+                                        Text(Date(timeIntervalSince1970: created).formatted(date: .abbreviated, time: .shortened))
+                                            .fontWeight(.semibold)
+                                    } else {
+                                        Text("Date unavailable").fontWeight(.semibold)
+                                    }
+                                    if take.legacy == true { muted("Legacy take") }
+                                    Spacer()
+                                    Button(s.playingTakeID == take.id ? "Stop" : "Replay") {
+                                        if s.playingTakeID == take.id { s.stopPlayback() }
+                                        else { Task { await s.playTake(take) } }
+                                    }
+                                }
+                                if let version = take.phraseRevision {
+                                    Text(version.text).fixedSize(horizontal: false, vertical: true)
+                                    let label = version.id == s.phrase?.revision ? "Current phrase" :
+                                        active.contains(version.id) ? "Another phrase" : "Earlier phrase version"
+                                    muted("\(label) · \(fmt(version.start)) – \(fmt(version.end))")
+                                }
+                                muted(take.playbackSpeed.map { "\(speedLabel($0)) speed" } ?? "Speed unavailable")
+                                muted("Word accuracy \(take.accuracy)% · Pace & rhythm \(take.rhythm)% · Intonation \(take.intonation.map { "\($0)%" } ?? "N/A")")
+                                if !take.tips.isEmpty {
+                                    DisclosureGroup("Feedback") {
+                                        ForEach(take.tips, id: \.self) { tip in
+                                            Text(tip).fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                }
+                                Divider()
+                            }
+                        }
+                    }
+                }.frame(height: 380)
+            }
+        }.padding(24).frame(width: 530)
+    }
+}
+
 struct FeedbackPanel: View {
     @EnvironmentObject var s: Store
     var body: some View {
@@ -1015,7 +1085,7 @@ struct EditSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Edit phrase").font(.system(size: 20, weight: .semibold)).tracking(-0.3)
-                muted("Fix the text or trim the timing. Saving clears this phrase's old feedback.")
+                muted("Changing the text or timing starts a new phrase version. Earlier recordings and feedback stay in Take history.")
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Text").font(.system(size: 12, weight: .medium))

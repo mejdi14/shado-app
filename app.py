@@ -28,7 +28,7 @@ jobs = {}
 models = {}
 LANGUAGES = {'en': 'English', 'fr': 'French'}
 model_lock = threading.Lock()
-file_lock = threading.Lock()
+file_lock = threading.RLock()
 
 def lan_host(host):
     name, _, port = host.rpartition(':')
@@ -69,8 +69,37 @@ def save_lesson(lesson):
     target = folder(lesson['id'])/'lesson.json'
     with file_lock:
         temp = target.with_suffix('.tmp')
-        temp.write_text(json.dumps(lesson, ensure_ascii=False, indent=2))
-        temp.replace(target)
+        try:
+            temp.write_text(json.dumps(lesson, ensure_ascii=False, indent=2))
+            temp.replace(target)
+        except Exception:
+            temp.unlink(missing_ok=True)
+            raise
+
+def phrase_revision(lesson, index):
+    p=lesson['phrases'][index]
+    revision={k:p[k] for k in ('start','end','text')}
+    # Existing clients can fetch an identity for a legacy phrase without rewriting the lesson.
+    key=p.get('revision') or hashlib.sha256(json.dumps([lesson['id'],index,revision],sort_keys=True).encode()).hexdigest()[:32]
+    return revision | {'id':key}
+
+def legacy_take(lesson, index):
+    result=lesson['phrases'][index].get('latest')
+    if result and not result.get('phraseRevision'):
+        return result | {'phraseRevision':phrase_revision(lesson,index),'legacy':True}
+
+def archive_phrase(lesson, index):
+    revision=phrase_revision(lesson,index)
+    lesson.setdefault('archivedRevisions',{})[revision['id']]=revision
+    if old:=legacy_take(lesson,index):
+        lesson.setdefault('takeHistory',[]).append(old)
+
+def public_lesson(lesson):
+    history=lesson.get('takeHistory',[])+[old for i in range(len(lesson['phrases'])) if (old:=legacy_take(lesson,i))]
+    return {k:v for k,v in lesson.items() if k!='archivedRevisions'} | {
+        'phrases':[p | {'revision':phrase_revision(lesson,i)['id']} for i,p in enumerate(lesson['phrases'])],
+        'takeHistory':sorted(history,key=lambda r:r.get('created') or 0,reverse=True),
+    }
 
 def run(cmd, timeout=180):
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -297,7 +326,7 @@ async def complete_training_exercise(request:Request):
         return progress
 
 @app.get('/api/lesson/{lid}')
-def lesson(lid:str): return read_lesson(lid)
+def lesson(lid:str): return public_lesson(read_lesson(lid))
 
 @app.get('/api/audio/{lid}')
 def audio(lid:str):
@@ -506,26 +535,39 @@ def resplit(lid:str):
     def action(jid):
         path=folder(lid)
         jobs[jid]['message']='Finding new phrases… Long sessions can take a few minutes.'
-        lesson=read_lesson(lid); language=lesson.get('language','en')
+        before=read_lesson(lid); language=before.get('language','en')
         phrases=make_phrases(transcribe(path/'audio.wav', language), load_audio(path/'audio.wav'))
         if not phrases: raise ValueError(f'No clear {LANGUAGES[language]} speech found, so the current phrases were kept.')
-        lesson['phrases']=phrases
-        save_lesson(lesson)
+        with file_lock:
+            lesson=read_lesson(lid)
+            active=[phrase_revision(lesson,i)['id'] for i in range(len(lesson['phrases']))]
+            if active!=[phrase_revision(before,i)['id'] for i in range(len(before['phrases']))]:
+                raise ValueError('The phrases changed during re-splitting. Start re-splitting again to replace them.')
+            for i in range(len(lesson['phrases'])): archive_phrase(lesson,i)
+            lesson['phrases']=[p | {'revision':uuid.uuid4().hex} for p in phrases]
+            save_lesson(lesson)
         return lid
     return job_start(action)
 
 @app.patch('/api/phrase/{lid}/{index}')
 async def edit(lid:str,index:int,request:Request):
-    lesson=read_lesson(lid)
-    if not 0<=index<len(lesson['phrases']): raise HTTPException(404,'Phrase not found')
     body=await request.json()
     try: start=float(body['start']); end=float(body['end']); text=str(body['text']).strip()
     except (KeyError,ValueError,TypeError): raise HTTPException(400,'Enter text and valid start/end times.')
-    if not text or len(text)>1000 or not (math.isfinite(start) and math.isfinite(end) and 0<=start<end<=lesson['duration']+.2 and end-start<=30): raise HTTPException(400,'Choose a phrase between 0 and 30 seconds within the audio.')
-    lesson['phrases'][index].update(start=start,end=end,text=text,words=[],practised=False)
-    lesson['phrases'][index].pop('latest',None)
-    save_lesson(lesson)
-    return lesson
+    with file_lock:
+        lesson=read_lesson(lid)
+        if not 0<=index<len(lesson['phrases']): raise HTTPException(404,'Phrase not found')
+        previous=phrase_revision(lesson,index)
+        if body.get('revision') is not None and body['revision']!=previous['id']:
+            raise HTTPException(409,'This phrase has changed. Reopen the session before editing it.')
+        if not text or len(text)>1000 or not (math.isfinite(start) and math.isfinite(end) and 0<=start<end<=lesson['duration']+.2 and end-start<=30): raise HTTPException(400,'Choose a phrase between 0 and 30 seconds within the audio.')
+        if (start,end,text)!=(previous['start'],previous['end'],previous['text']):
+            archive_phrase(lesson,index)
+            phrase=lesson['phrases'][index]
+            phrase.update(start=start,end=end,text=text,words=[],practised=False,revision=uuid.uuid4().hex)
+            phrase.pop('latest',None)
+            save_lesson(lesson)
+    return public_lesson(lesson)
 
 def words(text): return re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)*", unicodedata.normalize('NFC',text).lower().replace('’',"'"))
 
@@ -594,35 +636,60 @@ def compare(ref,take,text,heard,speed=1.0):
     return {'accuracy':accuracy,'rhythm':rhythm,'intonation':pitch,'durationRatio':round(ratio,2),'heard':heard,'words':marks,'curves':curves,'tips':tips,'created':time.time(),'playbackSpeed':speed}
 
 @app.post('/api/record/{lid}/{index}')
-async def record(lid:str,index:int,request:Request,speed:float=1.0):
+async def record(lid:str,index:int,request:Request,speed:float=1.0,revision:str|None=None):
     if not math.isfinite(speed) or not .5<=speed<=1.5: raise HTTPException(400,'Invalid playback speed')
     lesson=read_lesson(lid)
-    if not 0<=index<len(lesson['phrases']): raise HTTPException(404,'Phrase not found')
+    phrase=phrase_revision(lesson,index) if 0<=index<len(lesson['phrases']) else None
+    if revision is not None and (not phrase or revision!=phrase['id']):
+        phrase=lesson.get('archivedRevisions',{}).get(ident(revision))
+        if not phrase: raise HTTPException(409,'This phrase version is unavailable. Reopen the session before recording again.')
+    if not phrase: raise HTTPException(404,'Phrase not found')
+    created=time.time()
     if int(request.headers.get('content-length','0'))>12*1024*1024: raise HTTPException(413,'Recording is too large.')
     raw=bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
         if len(raw)>12*1024*1024: raise HTTPException(413,'Recording is too large.')
-    tid=uuid.uuid4().hex; path=folder(lid); temp=path/(tid+'.media'); temp.write_bytes(raw)
+    tid=uuid.uuid4().hex; path=folder(lid)
+    temp=path/(tid+'.media'); pending=path/(tid+'.pending.wav'); wav=path/(tid+'.wav')
     def action(jid):
         try:
             jobs[jid]['message']='Listening to your take…'
-            wav=path/(tid+'.wav'); convert(temp,wav,duration=40)
-            take=load_audio(wav); phrase=lesson['phrases'][index]
+            convert(temp,pending,duration=40)
+            take=load_audio(pending)
             source=load_audio(path/'audio.wav'); ref=source[int(phrase['start']*16000):int(phrase['end']*16000)]
             if len(take)>16000*35: raise ValueError('Keep each take under 35 seconds.')
-            heard=' '.join(s.text.strip() for s in transcribe(wav, lesson.get('language','en')))
+            heard=' '.join(s.text.strip() for s in transcribe(pending, lesson.get('language','en')))
             result=compare(ref,take,phrase['text'],heard,speed)
-            result.update(id=tid,audio=f'/api/take/{lid}/{tid}')
-            current=read_lesson(lid); p=current['phrases'][index]
-            p['practised']=True; p['latest']=result; p['takes']=p.get('takes',0)+1
-            save_lesson(current)
+            result.update(id=tid,audio=f'/api/take/{lid}/{tid}',created=created,phraseRevision=phrase)
+            with file_lock:
+                current=read_lesson(lid)
+                history=current.setdefault('takeHistory',[])
+                if 0<=index<len(current['phrases']) and phrase_revision(current,index)['id']==phrase['id']:
+                    p=current['phrases'][index]
+                    if old:=legacy_take(current,index): history.append(old)
+                    p['practised']=True; p['latest']=result; p['takes']=(p.get('takes') or 0)+1
+                history.append(result)
+                pending.replace(wav)
+                try: save_lesson(current)
+                except Exception:
+                    wav.unlink(missing_ok=True)
+                    raise ValueError('The take could not be saved. Free some disk space and try again.')
             return lid
+        except HTTPException as exc:
+            raise ValueError('This session is no longer available.') from exc
+        finally:
+            for file in (temp,pending):
+                try: file.unlink(missing_ok=True)
+                except OSError: pass
+    with file_lock:
+        read_lesson(lid)
+        try:
+            temp.write_bytes(raw)
+            return job_start(action) | {'takeId':tid}
         except Exception:
-            (path/(tid+'.wav')).unlink(missing_ok=True)
-            raise
-        finally: temp.unlink(missing_ok=True)
-    return job_start(action)
+            temp.unlink(missing_ok=True)
+            raise HTTPException(500,'The recording could not be queued. Please try again.')
 
 @app.get('/api/wave/{lid}/{index}')
 def waveform(lid:str,index:int):
@@ -639,9 +706,11 @@ def track(y):
     return {'energy':np.round(e/max(float(e.max()) if len(e) else 0,1e-8),3).tolist(),'pitch':[round(float(v),1) if np.isfinite(v) else None for v in p]}
 
 @app.get('/api/voice/{lid}/{index}')
-def voice(lid:str,index:int):
+def voice(lid:str,index:int,revision:str|None=None):
     lesson=read_lesson(lid)
     if not 0<=index<len(lesson['phrases']): raise HTTPException(404,'Phrase not found')
+    if revision is not None and revision!=phrase_revision(lesson,index)['id']:
+        raise HTTPException(409,'This phrase has changed. Reopen the session to see its voice map.')
     phrase=lesson['phrases'][index]; path=folder(lid)
     sr,y=wavfile.read(path/'audio.wav',mmap=True)
     ref=y[int(phrase['start']*sr):int(phrase['end']*sr)]
@@ -655,12 +724,15 @@ def voice(lid:str,index:int):
 @app.get('/api/take/{lid}/{tid}')
 def take_audio(lid:str,tid:str):
     path=folder(lid)/(ident(tid)+'.wav')
-    if not path.exists(): raise HTTPException(404,'Take not found')
+    lesson=read_lesson(lid)
+    saved=any(r['id']==tid for r in lesson.get('takeHistory',[])) or any((p.get('latest') or {}).get('id')==tid for p in lesson['phrases'])
+    if not saved or not path.is_file(): raise HTTPException(404,'Audio for this take is unavailable.')
     return FileResponse(path,media_type='audio/wav')
 
 @app.delete('/api/lesson/{lid}')
 def delete(lid:str):
-    read_lesson(lid); shutil.rmtree(folder(lid)); return {'ok':True}
+    with file_lock:
+        read_lesson(lid); shutil.rmtree(folder(lid)); return {'ok':True}
 
 @app.get('/api/status')
 def status(): return JSONResponse({'local':True,'modelReady':bool(models),'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists()),'elevenLabsCLI':os.access(eleven_cli(),os.X_OK)},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})

@@ -162,7 +162,7 @@ struct StudioHost: View {
         .alert("Re-split this session?", isPresented: $store.showResplit) {
             Button("Keep phrases", role: .cancel) {}
             Button("Re-split phrases") { Task { await store.resplitLesson() } }
-        } message: { Text("The audio is transcribed again and divided into new phrases. Your phrase edits and feedback for this session will be cleared.") }
+        } message: { Text("The audio is transcribed again and replaces the current phrases and edits. Practice starts at phrase one. Earlier recordings and feedback stay in Take history.") }
         .task { await store.start() }
     }
 }
