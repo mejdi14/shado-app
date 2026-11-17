@@ -68,7 +68,14 @@ Do not start D3 LAN work, Voice Training, the Mouth Guide or PDF on mobile, the 
 - Model choice:
   - Opus with high effort for steps that touch saved data, the engine, accounts, payments, security, release configuration or several platforms at once: 2, 7–13, 16, 17.
   - Sonnet with medium effort for the UI, settings, help, docs and accessibility steps: 1, 3–6, 14, 15, 18.
-  - Haiku subagents for file discovery and lookups. Check their results before relying on them.
+- Use lighter agents for light work, at every level:
+  - **You, the coordinator:** don't do simple or mechanical work yourself on Opus. Hand it to a subagent with an explicit model:
+    - Haiku for file discovery, source inventories, grep sweeps, documentation lookups and reading long logs or session reports;
+    - Sonnet for git housekeeping, small mechanical edits (status columns, docs, renames in a few files) and drafting routine feature briefs.
+
+    Keep design decisions, diff reviews and accepting commits on Opus.
+  - **Every feature session:** put the same rule in each brief. Use Haiku subagents for searching and inventories, and Sonnet subagents for mechanical edits, test scaffolding and other routine changes within the feature. Keep tricky logic, saved-data handling and security on the session's own model.
+  - **Always:** check a subagent's result before relying on it, and set the subagent's model explicitly (`model: "haiku"` or `model: "sonnet"`).
 - Keep normal permission controls (no bypass flags). Pre-approve only what sessions need:
   - Read, Grep, Glob, Edit, Write and Agent;
   - git status, diff, log, show, add and commit;
