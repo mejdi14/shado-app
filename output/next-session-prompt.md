@@ -65,9 +65,17 @@ Do not start D3 LAN work, Voice Training, the Mouth Guide or PDF on mobile, the 
   - `claude -p --model opus --effort high --output-format json --session-id <uuid> --add-dir <scratchpad> --allowedTools ...`
   - `claude -p --model sonnet --effort medium ...`
 - Pass the feature brief on stdin. Capture each session ID and use `--resume <id>` for corrections within that feature.
-- Model choice:
-  - Opus with high effort for steps that touch saved data, the engine, accounts, payments, security, release configuration or several platforms at once: 2, 7–13, 16, 17.
-  - Sonnet with medium effort for the UI, settings, help, docs and accessibility steps: 1, 3–6, 14, 15, 18.
+- Model choice: Sonnet is the default. Use Sonnet with medium effort for every step or correction that Sonnet can do well. Use Opus with high effort only when the work is genuinely complex or risky: deleting or changing existing saved practice data, concurrency in the engine's job worker, authentication, payments and entitlement verification, or security-sensitive code.
+  - Sonnet, medium effort: steps 1–7, 12–18.
+    - Step 1 is the CI path.
+    - Step 2 is the rules, docs and PostHog removal.
+    - Steps 3–6 are the walkthrough, help and settings.
+    - Step 7 is rename.
+    - Steps 12–18 are export, progress, practice flow, About/legal, release config, tests and the mobile extras.
+  - Opus, high effort: steps 8–11. These are take delete and pin (saved data), cancel import (job worker), accounts, and Pro payments.
+  - Escalation:
+    - If a Sonnet step turns out harder than expected, or fails your review twice, resume it or redo it with Opus. Record why in the final report.
+    - Small corrections to an Opus step can go to a Sonnet session when the fix is mechanical.
 - Use lighter agents for light work, at every level:
   - **You, the coordinator:** don't do simple or mechanical work yourself on Opus. Hand it to a subagent with an explicit model:
     - Haiku for file discovery, source inventories, grep sweeps, documentation lookups and reading long logs or session reports;
