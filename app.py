@@ -705,10 +705,10 @@ def backup_sample_exists(data_fd):
                     check_backup(size <= backup_file_limit('lesson.json'))
                     lesson = backup_json(stream)
                     check_backup(isinstance(lesson, dict))
-                    if lesson.get('sample'): return True
+                    if lesson.get('sample'): return lid
         except FileNotFoundError:
             continue
-    return False
+    return None
 
 def publish_lesson(stage_fd, data_fd, lid):
     libc = ctypes.CDLL(None, use_errno=True)
@@ -724,12 +724,50 @@ def publish_lesson(stage_fd, data_fd, lid):
     if error == errno.EEXIST: return False
     raise OSError(error, os.strerror(error))
 
+def merge_sample(stage_fd, data_fd, aid, did, undo):
+    # Sample phrase IDs are derived from each install's lesson ID, so archived takes
+    # join the sample phrase with the same timing and text.
+    with backup_directory(aid, stage_fd) as source_fd, backup_directory(did, data_fd) as dest_fd:
+        with backup_source(source_fd, 'lesson.json') as (stream, _): archived = backup_json(stream)
+        try:
+            with backup_source(dest_fd, 'lesson.json') as (stream, size):
+                check_backup(size <= backup_file_limit('lesson.json'))
+                lesson = backup_json(stream)
+            _, linked = backup_lesson(lesson, did)
+        except (ValueError, RecursionError): return 0
+        original = json.loads(json.dumps(lesson))
+        current = {}
+        for i in range(len(lesson['phrases'])):
+            r = phrase_revision(lesson, i)
+            current.setdefault((r['start'], r['end'], r['text']), (i, r))
+        taken = linked | set(os.listdir(dest_fd)); files = set(os.listdir(source_fd))
+        history = lesson.setdefault('takeHistory', []); added = 0
+        for take in sorted(lesson_history(archived), key=lambda r: r.get('created') or 0):
+            name = take['id'] + '.wav'; old = take.get('phraseRevision')
+            match = old and current.get((old['start'], old['end'], old['text']))
+            if not match or name in taken or name not in files: continue
+            taken.add(name)
+            if not publish_lesson(source_fd, dest_fd, name): continue
+            undo['wavs'].append(f'{did}/{name}')
+            i, revision = match; p = lesson['phrases'][i]; latest = p.get('latest')
+            take = take | {'audio': f'/api/take/{did}/{take["id"]}', 'phraseRevision': revision}
+            if latest and not latest.get('phraseRevision'):
+                latest = legacy_take(lesson, i); history.append(latest)
+            p['latest'] = take if not latest or (take.get('created') or 0) > (latest.get('created') or 0) else latest
+            p['practised'] = True; p['takes'] = (p.get('takes') or int(bool(latest))) + 1
+            history.append(take); added += 1
+        if added:
+            save_lesson(lesson)
+            undo.setdefault('lesson', original)
+        return added
+
 def publish_backup(data_fd, stage_fd, lessons, progress):
     with file_lock:
         if any(job['state'] == 'working' for job in jobs.values()):
             raise HTTPException(409, 'Let the current practice jobs finish, then restore the backup again.')
         check_backup(os.path.samestat(os.stat(DATA, follow_symlinks=False), os.fstat(data_fd)))
-        skip_sample = any(lessons.values()) and backup_sample_exists(data_fd)
+        existing = any(lessons.values()) and backup_sample_exists(data_fd)
+        skip_sample = bool(existing)
         adds = 0
         if progress:
             try:
@@ -749,11 +787,13 @@ def publish_backup(data_fd, stage_fd, lessons, progress):
                     os.fsync(fd)
         restored = []
         skipped = 0
-        skipped_sample = 0
+        skipped_sample = sample_added = 0
+        undo = {'wavs': []}
         try:
             for lid, sample in lessons.items():
                 if sample and skip_sample:
                     skipped_sample += 1
+                    if existing: sample_added += merge_sample(stage_fd, data_fd, lid, existing, undo)
                     continue
                 if publish_lesson(stage_fd, data_fd, lid):
                     restored.append(lid)
@@ -762,12 +802,14 @@ def publish_backup(data_fd, stage_fd, lessons, progress):
             if adds: os.replace(BACKUP_PROGRESS, BACKUP_PROGRESS, src_dir_fd=stage_fd, dst_dir_fd=data_fd)
         except OSError as exc:
             try:
+                if 'lesson' in undo: save_lesson(undo['lesson'])
+                for name in reversed(undo['wavs']): os.unlink(name, dir_fd=data_fd)
                 for lid in reversed(restored):
                     os.rename(lid, lid, src_dir_fd=data_fd, dst_dir_fd=stage_fd)
             except OSError:
                 raise HTTPException(500, 'Restore was interrupted. Some complete sessions may be present. Retry the same backup to add the rest.') from exc
             raise
-    return {'restoredLessons': len(restored), 'skippedLessons': skipped, 'skippedSample': skipped_sample, 'trainingAdded': adds}
+    return {'restoredLessons': len(restored), 'skippedLessons': skipped, 'skippedSample': skipped_sample, 'trainingAdded': adds, 'samplePracticeAdded': sample_added}
 
 def restore_backup(source, data_fd):
     stage = '.restore-' + uuid.uuid4().hex

@@ -38,11 +38,13 @@ struct BackupRestoreResult: Decodable {
     let skippedLessons: Int
     let skippedSample: Int
     let trainingAdded: Int
+    let samplePracticeAdded: Int?
 
     var summary: String {
         var result = ["Sessions restored: \(restoredLessons)."]
         if skippedLessons > 0 { result.append("Existing session IDs skipped: \(skippedLessons).") }
         if skippedSample > 0 { result.append("Your existing guided sample was kept.") }
+        if let added = samplePracticeAdded, added > 0 { result.append("Guided sample takes added: \(added).") }
         if trainingAdded > 0 { result.append("Voice Training completions added: \(trainingAdded).") }
         return result.joined(separator: " ")
     }

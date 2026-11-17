@@ -120,7 +120,7 @@ private struct PracticeSettingsView: View {
                         .disabled(backupWorking || backupAPI == nil)
                     if backupWorking { ProgressView().controlSize(.small) }
                 }
-                Text("Back up sessions, takes, and Voice Training progress to a ZIP of up to 1 GiB. Restore skips existing session IDs, keeps your current guided sample, and adds any missing Voice Training completions.")
+                Text("Back up sessions, takes, and Voice Training progress to a ZIP of up to 1 GiB. Restore skips existing session IDs, keeps your current guided sample while adding its matching backed-up takes, and adds any missing Voice Training completions.")
                     .foregroundStyle(.secondary)
                 if let backupMessage { Text(backupMessage).textSelection(.enabled) }
             }

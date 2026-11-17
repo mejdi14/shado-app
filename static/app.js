@@ -128,13 +128,14 @@ if(['127.0.0.1','localhost'].includes(location.hostname)){
   restoreButton.onclick=()=>input.click();
   input.onchange=()=>{
     const file=input.files[0];input.value='';
-    if(!file||!confirm('Restore this backup? Existing session IDs and the current guided sample will be kept. Missing Voice Training completions will be added.'))return;
+    if(!file||!confirm('Restore this backup? Existing session IDs and the current guided sample will be kept, and matching guided sample takes added. Missing Voice Training completions will be added.'))return;
     runBackup('Restoring your backup',async()=>{
       if(file.size>1024**3)throw new Error('Choose a backup ZIP of 1 GiB or less.');
       const result=await api('/api/backup/restore',{method:'POST',headers:{'Content-Type':'application/zip'},body:file});
       const summary=[`Sessions restored: ${result.restoredLessons}.`];
       if(result.skippedLessons)summary.push(`Existing session IDs skipped: ${result.skippedLessons}.`);
       if(result.skippedSample)summary.push('Your existing guided sample was kept.');
+      if(result.samplePracticeAdded)summary.push(`Guided sample takes added: ${result.samplePracticeAdded}.`);
       if(result.trainingAdded)summary.push(`Voice Training completions added: ${result.trainingAdded}.`);
       try{await refreshLibrary()}catch{summary.push('Reload the page to refresh your library.')}
       return summary.join(' ');
