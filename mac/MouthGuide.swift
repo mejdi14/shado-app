@@ -432,6 +432,7 @@ enum MouthHead {
 
 struct MouthGuide: View {
     @EnvironmentObject var s: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let phrase: Phrase
     @AppStorage("mouth-guide") private var shown = true
     @State private var line = MouthTimeline()
@@ -442,12 +443,12 @@ struct MouthGuide: View {
             HStack(spacing: 8) {
                 Label("Mouth guide", systemImage: "mouth").font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Button(shown ? "Hide" : "Show") { shown.toggle() }.buttonStyle(PillStyle(compact: true)).help(shown ? "Hide the mouth guide" : "Show how each sound is usually made")
+                Button(shown ? "Hide" : "Show") { shown.toggle() }.buttonStyle(PillStyle(compact: true)).accessibilityLabel(shown ? "Hide mouth guide" : "Show mouth guide")
             }
             if shown {
-                TimelineView(.animation(paused: !s.isPlaying)) { tl in
-                    let t = s.isPlaying ? (s.original?.currentTime ?? phrase.start) : phrase.start + s.position
-                    let pose = MouthPose(line.artic(t)), clock = tl.date.timeIntervalSinceReferenceDate
+                TimelineView(.animation(paused: reduceMotion || !s.isPlaying)) { tl in
+                    let t = !reduceMotion && s.isPlaying ? (s.original?.currentTime ?? phrase.start) : phrase.start + s.position
+                    let pose = MouthPose(line.artic(t)), clock = reduceMotion ? 0 : tl.date.timeIntervalSinceReferenceDate
                     HStack(alignment: .top, spacing: 0) {
                         Canvas { g, size in MouthHead.draw(g, size, pose, clock) }.frame(width: 210, height: 270)
                             .accessibilityLabel("Side view of a head showing the lips, tongue and jaw for the current sound")
@@ -471,7 +472,7 @@ struct MouthGuide: View {
         return VStack(alignment: .leading, spacing: 8) {
             Text("MOUTH GUIDE").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(2.4).foregroundStyle(MouthHead.skull.opacity(0.85))
             Text(snd.map { "/\($0.ipa)/" } ?? "–").font(.system(size: 34, weight: .light, design: .rounded)).foregroundStyle(MouthHead.skull).shadow(color: MouthHead.skull.opacity(0.7), radius: 8)
-            Text(snd?.hint ?? (s.isPlaying ? "Between words" : "Press Listen to watch each sound, or drag the position slider.")).font(.system(size: 13)).foregroundStyle(Color.white.opacity(0.82)).fixedSize(horizontal: false, vertical: true)
+            Text(snd?.hint ?? (reduceMotion ? "Use the position slider to inspect each sound." : s.isPlaying ? "Between words" : "Press Listen to watch each sound, or drag the position slider.")).font(.system(size: 13)).foregroundStyle(Color.white.opacity(0.82)).fixedSize(horizontal: false, vertical: true)
             if let seg, !s.concealed { Text("in “\(seg.word)”").font(.system(size: 13, weight: .medium)).foregroundStyle(MouthHead.lipC) }
             Spacer(minLength: 6)
             Canvas { g, size in MouthHead.drawLips(g, size, pose) }.frame(width: 96, height: 54).accessibilityHidden(true)

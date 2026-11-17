@@ -63,7 +63,7 @@ struct MicrophoneRecoveryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label(problem.message, systemImage: "exclamationmark.circle")
-                .font(.system(size: 12)).foregroundStyle(Color.warn)
+                .font(.callout).foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
             if problem != .restricted {
                 MicrophoneSettingsButton(showSound: problem != .denied)

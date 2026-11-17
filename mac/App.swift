@@ -282,7 +282,15 @@ struct RootView: View {
     }
 }
 
+@MainActor func announcePracticeStatus(_ message: String) {
+    NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [
+        .announcement: message,
+        .priority: NSAccessibilityPriorityLevel.medium.rawValue
+    ])
+}
+
 struct StudioHost: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject var store: Store
     @StateObject var training: VoiceTrainingStore
     init(api: API) {
@@ -291,7 +299,7 @@ struct StudioHost: View {
     }
     var body: some View {
         HStack(spacing: 0) {
-            Sidebar().frame(width: 228).disabled(training.locked || training.saving)
+            Sidebar().frame(width: 228).disabled(training.locked || training.saving).focusSection()
             Rectangle().fill(Color.line).frame(width: 1).ignoresSafeArea()
             ZStack {
                 Group {
@@ -305,7 +313,10 @@ struct StudioHost: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.canvas.ignoresSafeArea())
             .overlay(alignment: .bottom) { if let t = store.toast { ToastView(text: t).padding(20).transition(.move(edge: .bottom).combined(with: .opacity)) } }
-            .animation(.easeInOut(duration: 0.2), value: store.toast)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: store.toast)
+            .onChange(of: store.toast) { message in
+                if let message { announcePracticeStatus(message) }
+            }
         }
         .font(.system(size: 13))
         .environmentObject(store)

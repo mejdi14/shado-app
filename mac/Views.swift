@@ -46,7 +46,7 @@ struct Orb: View {
         Circle().fill(AngularGradient(gradient: Gradient(colors: c + [c[0]]), center: .center, angle: .degrees(Double(n % 360))))
             .overlay(Circle().fill(RadialGradient(gradient: Gradient(colors: [.white.opacity(0.6), .white.opacity(0)]), center: UnitPoint(x: 0.32, y: 0.28), startRadius: 0, endRadius: size * 0.6)))
             .overlay(Circle().stroke(Color.black.opacity(0.06)))
-            .frame(width: size, height: size)
+            .frame(width: size, height: size).accessibilityHidden(true)
     }
 }
 
@@ -58,7 +58,7 @@ struct Bar: View {
                 Capsule().fill(Color.subtle)
                 Capsule().fill(LinearGradient(gradient: Gradient(colors: [.violet, .rose]), startPoint: .leading, endPoint: .trailing)).frame(width: g.size.width * max(0, min(1, value)))
             }
-        }
+        }.accessibilityHidden(true)
     }
 }
 
@@ -146,7 +146,7 @@ struct Segmented<T: Hashable>: View {
                         .padding(.horizontal, 12).padding(.vertical, 6).frame(maxWidth: .infinity)
                         .background(Capsule().fill(on ? Color.surface : .clear).shadow(color: .black.opacity(on ? 0.1 : 0), radius: 2, y: 1))
                         .contentShape(Capsule())
-                }.buttonStyle(.plain)
+                }.buttonStyle(.borderless).accessibilityAddTraits(on ? .isSelected : [])
             }
         }.padding(3).background(Capsule().fill(Color.subtle))
     }
@@ -210,6 +210,7 @@ struct Sidebar: View {
                         ForEach(s.library) { l in
                             Button { Task { await s.openLesson(l.id) } } label: { HStack(spacing: 9) { Orb(seed: l.id, size: 16); Text(l.title).lineLimit(1); Spacer(minLength: 0) } }
                                 .buttonStyle(RowStyle(active: !s.showLibrary && !s.showTraining && s.lesson?.id == l.id)).disabled(s.locked)
+                                .accessibilityAddTraits(!s.showLibrary && !s.showTraining && s.lesson?.id == l.id ? .isSelected : [])
                         }
                     }
                 }
@@ -235,6 +236,7 @@ struct Sidebar: View {
                 Spacer(minLength: 0)
             }.accessibilityElement(children: .combine)
         }.buttonStyle(RowStyle(active: active, pad: 7)).disabled(s.locked)
+            .accessibilityAddTraits(active ? .isSelected : [])
     }
 }
 
@@ -431,10 +433,10 @@ struct StudioView: View {
     var body: some View {
         if let l = s.lesson, let p = s.phrase {
             HStack(spacing: 0) {
-                ScrollView { PracticePanel(lesson: l, phrase: p, showInspector: $showInspector).padding(32).frame(maxWidth: 880).frame(maxWidth: .infinity) }
+                ScrollView { PracticePanel(lesson: l, phrase: p, showInspector: $showInspector).padding(32).frame(maxWidth: 880).frame(maxWidth: .infinity) }.focusSection()
                 if showInspector {
                     Rectangle().fill(Color.line).frame(width: 1).ignoresSafeArea()
-                    Inspector(lesson: l).frame(width: 330)
+                    Inspector(lesson: l).frame(width: 330).focusSection()
                 }
             }
         } else if let l = s.lesson {
@@ -496,6 +498,7 @@ struct EmptyStudio: View {
 
 struct PracticePanel: View {
     @State private var showTakeHistory = false
+    @AccessibilityFocusState private var lessonTitleFocused: Bool
     @EnvironmentObject var s: Store
     let lesson: Lesson
     let phrase: Phrase
@@ -506,7 +509,8 @@ struct PracticePanel: View {
             HStack(spacing: 14) {
                 Orb(seed: lesson.id, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(lesson.title).font(.system(size: 20, weight: .semibold)).tracking(-0.3).lineLimit(1)
+                    Text(lesson.title).font(.title2.weight(.semibold)).tracking(-0.3)
+                        .accessibilityAddTraits(.isHeader).accessibilityFocused($lessonTitleFocused)
                     muted("\(lesson.phrases.count) phrases · \(fmt(lesson.duration)) · \(sourceLabel(lesson.source, lesson.sample == true))")
                 }
                 Spacer()
@@ -524,7 +528,7 @@ struct PracticePanel: View {
                     }
                     Divider()
                     Button("Delete session…", role: .destructive) { s.stopPlayback(); s.showDelete = true }
-                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(s.locked).help("More")
+                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(s.locked).accessibilityLabel("Session actions")
             }
             VStack(alignment: .leading, spacing: 8) {
                 Segmented(options: Mode.allCases.map { ($0, $0.title) }, selection: Binding(get: { s.mode }, set: { s.setMode($0) })).frame(maxWidth: 340).disabled(s.locked)
@@ -533,23 +537,30 @@ struct PracticePanel: View {
             phraseCard
             muted("Space  play / pause   ·   R  record   ·   ← →  change phrase").frame(maxWidth: .infinity)
         }
+        .task(id: lesson.id) { lessonTitleFocused = true }
+        .onChange(of: s.microphoneProblem?.message) { message in
+            if let message { announcePracticeStatus(message) }
+        }
+        .onChange(of: s.takeDraftMessage) { message in
+            if let message, message != "Your recording is ready to submit." { announcePracticeStatus(message) }
+        }
     }
 
     var phraseCard: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 8) {
-                Button { s.select(s.index - 1) } label: { Image(systemName: "chevron.left") }.buttonStyle(RoundStyle(size: 28)).keyboardShortcut(.leftArrow, modifiers: []).disabled(s.locked || s.index == 0).help("Previous phrase (←)")
-                Text("Phrase \(s.index + 1) of \(lesson.phrases.count)").font(.system(size: 13, weight: .medium)).monospacedDigit()
-                Button { s.select(s.index + 1) } label: { Image(systemName: "chevron.right") }.buttonStyle(RoundStyle(size: 28)).keyboardShortcut(.rightArrow, modifiers: []).disabled(s.locked || s.index >= lesson.phrases.count - 1).help("Next phrase (→)")
+                Button { s.select(s.index - 1) } label: { Image(systemName: "chevron.left") }.buttonStyle(RoundStyle(size: 28)).keyboardShortcut(.leftArrow, modifiers: []).disabled(s.locked || s.index == 0).help("Previous phrase (←)").accessibilityLabel("Previous phrase")
+                Text("Phrase \(s.index + 1) of \(lesson.phrases.count)").font(.system(size: 13, weight: .medium)).monospacedDigit().accessibilityAddTraits(.isHeader)
+                Button { s.select(s.index + 1) } label: { Image(systemName: "chevron.right") }.buttonStyle(RoundStyle(size: 28)).keyboardShortcut(.rightArrow, modifiers: []).disabled(s.locked || s.index >= lesson.phrases.count - 1).help("Next phrase (→)").accessibilityLabel("Next phrase")
                 Spacer()
                 muted("\(fmt(phrase.start)) – \(fmt(phrase.end))").monospacedDigit()
-                Button { s.concealed.toggle() } label: { Image(systemName: s.concealed ? "eye" : "eye.slash") }.buttonStyle(RoundStyle(size: 28)).disabled(s.locked).help(s.concealed ? "Show text" : "Hide text")
-                Button { s.stopPlayback(); s.showEdit = true } label: { Image(systemName: "pencil") }.buttonStyle(RoundStyle(size: 28)).disabled(s.locked).help("Edit this phrase")
+                Button { s.concealed.toggle() } label: { Image(systemName: s.concealed ? "eye" : "eye.slash") }.buttonStyle(RoundStyle(size: 28)).disabled(s.locked).help(s.concealed ? "Show text" : "Hide text").accessibilityLabel(s.concealed ? "Show phrase text" : "Hide phrase text")
+                Button { s.stopPlayback(); s.showEdit = true } label: { Image(systemName: "pencil") }.buttonStyle(RoundStyle(size: 28)).disabled(s.locked).help("Edit this phrase").accessibilityLabel("Edit this phrase")
             }
             if s.concealed {
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 6) { ForEach(PracticePanel.hiddenWidths.indices, id: \.self) { i in Capsule().fill(Color.subtle).frame(width: PracticePanel.hiddenWidths[i], height: 18) } }
-                    Button("Show text") { s.concealed = false }.buttonStyle(PillStyle(compact: true))
+                    HStack(spacing: 6) { ForEach(PracticePanel.hiddenWidths.indices, id: \.self) { i in Capsule().fill(Color.subtle).frame(width: PracticePanel.hiddenWidths[i], height: 18) } }.accessibilityHidden(true)
+                    Button("Show text") { s.concealed = false }.buttonStyle(PillStyle(compact: true)).disabled(s.locked)
                 }.frame(maxWidth: .infinity, minHeight: 80, alignment: .topLeading)
             } else {
                 PracticeSentence(phrase: phrase)
@@ -559,7 +570,6 @@ struct PracticePanel: View {
             }
             controls
             if let problem = s.microphoneProblem { MicrophoneRecoveryView(problem: problem) }
-            if s.lesson?.language != "fr" { MouthGuide(phrase: phrase) }
             if phrase.latest != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     muted("Replay your take and compare its rhythm with the original.")
@@ -569,6 +579,7 @@ struct PracticePanel: View {
             Button { s.stopPlayback(); showTakeHistory = true } label: {
                 Label("Take history", systemImage: "clock.arrow.circlepath")
             }.buttonStyle(PillStyle(compact: true)).disabled(s.locked)
+            if s.lesson?.language != "fr" { MouthGuide(phrase: phrase) }
             Rectangle().fill(Color.line).frame(height: 1)
             if phrase.latest != nil { NextStepView(phrase: phrase) }
             else { deliveryGuide }
@@ -601,7 +612,8 @@ struct PracticePanel: View {
                 HStack(spacing: 10) {
                     Slider(value: Binding(get: { head }, set: { s.seek($0) }), in: 0...max(0.01, phrase.end - phrase.start))
                         .controlSize(.small).disabled(s.locked || s.isTakePlaying).accessibilityLabel("Position in example")
-                    Text("\(fmt(head)) / \(fmt(phrase.end - phrase.start))").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit()
+                        .accessibilityValue("\(fmt(head)) of \(fmt(phrase.end - phrase.start))")
+                    Text("\(fmt(head)) / \(fmt(phrase.end - phrase.start))").font(.system(size: 11)).foregroundStyle(.secondary).monospacedDigit().accessibilityHidden(true)
                 }
             }
         }
@@ -609,12 +621,13 @@ struct PracticePanel: View {
 
     @ViewBuilder var playbackButtons: some View {
         Button { s.togglePlay() } label: { Label(s.isPlaying ? "Pause" : "Listen", systemImage: s.isPlaying ? "pause.fill" : "play.fill") }
-            .buttonStyle(PillStyle(primary: phrase.latest == nil)).keyboardShortcut(.space, modifiers: []).disabled(s.locked).help("Play the example (Space)")
+            .buttonStyle(PillStyle(primary: phrase.latest == nil)).keyboardShortcut(.space, modifiers: []).disabled(s.locked).help("Play the example (Space)").accessibilityLabel(s.isPlaying ? "Pause example" : "Listen to example")
         Menu { ForEach(PracticeDefaults.speeds, id: \.self) { v in Button(speedLabel(v)) { s.speed = v } } } label: { Text(speedLabel(s.speed)) }
-            .menuStyle(.borderlessButton).fixedSize().disabled(s.locked).help("Playback speed")
+            .menuStyle(.borderlessButton).fixedSize().disabled(s.locked).help("Playback speed").accessibilityLabel("Playback speed").accessibilityValue(speedLabel(s.speed))
         Button { s.looping.toggle() } label: { Image(systemName: "repeat") }
             .buttonStyle(RoundStyle(size: 30, fill: s.looping ? .selected : .surface)).disabled(s.locked)
-            .help(s.looping ? "Repeat is on" : "Repeat this phrase").accessibilityLabel(s.looping ? "Turn repeat off" : "Turn repeat on")
+            .help(s.looping ? "Repeat is on" : "Repeat this phrase")
+            .accessibilityLabel("Repeat this phrase").accessibilityValue(s.looping ? "On" : "Off")
     }
 
     var recordButton: some View {
@@ -627,13 +640,14 @@ struct PracticePanel: View {
                 }
             }.buttonStyle(PillStyle(primary: phrase.latest != nil || s.recording)).keyboardShortcut("r", modifiers: [])
                 .disabled(!s.recording && s.locked).help(s.recording ? "Stop recording (R)" : "Record a take (R)")
+                .accessibilityLabel(s.recording ? "Stop recording" : s.microphoneProblem != nil ? "Retry recording" : "Record a take")
         }
     }
 
     var comparison: some View {
         HStack(spacing: 8) {
-            Button { Task { await s.toggleTake() } } label: { Label(s.isTakePlaying ? "Stop take" : "Your take", systemImage: s.isTakePlaying ? "stop.fill" : "play.fill") }.buttonStyle(PillStyle(compact: true))
-            Button { s.compareAB() } label: { Label("Original → you", systemImage: "arrow.left.arrow.right") }.buttonStyle(PillStyle(compact: true)).help("Play the original, then your take")
+            Button { Task { await s.toggleTake() } } label: { Label(s.isTakePlaying ? "Stop take" : "Replay your take", systemImage: s.isTakePlaying ? "stop.fill" : "play.fill") }.buttonStyle(PillStyle(compact: true))
+            Button { s.compareAB() } label: { Label("Original → you", systemImage: "arrow.left.arrow.right") }.buttonStyle(PillStyle(compact: true)).help("Play the original, then your take").accessibilityLabel("Compare example and your take")
             Spacer(minLength: 0)
         }.disabled(s.locked)
     }
@@ -653,17 +667,23 @@ struct PracticePanel: View {
 
 struct PracticeSentence: View {
     @EnvironmentObject var s: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let phrase: Phrase
     static let tokenPattern = try! NSRegularExpression(pattern: "\\p{L}[\\p{L}\\p{M}]*(?:[\'’]\\p{L}[\\p{L}\\p{M}]*)*")
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.05, paused: !s.isPlaying)) { _ in
-            let head = s.isPlaying ? (s.original?.currentTime ?? phrase.start) - phrase.start : nil
+        TimelineView(.animation(minimumInterval: 0.05, paused: reduceMotion || !s.isPlaying)) { _ in
+            let head = !reduceMotion && s.isPlaying ? (s.original?.currentTime ?? phrase.start) - phrase.start : nil
             VStack(alignment: .leading, spacing: 14) {
                 Text(sentence(head)).font(.system(size: 27)).tracking(-0.3).lineSpacing(7).textSelection(.enabled)
+                    .accessibilityLabel(phrase.text)
                     .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 14) { annotationKey }
                     VStack(alignment: .leading, spacing: 6) { annotationKey }
+                }
+                if let words = phrase.latest?.words.filter({ !$0.match }).map(\.word), !words.isEmpty {
+                    Text("Words to check: \(words.joined(separator: ", "))").font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }.padding(.vertical, 12)
         }
@@ -675,7 +695,8 @@ struct PracticeSentence: View {
             if !v.pauses.isEmpty { Text("| = pause").font(.system(size: 11)).foregroundStyle(.secondary) }
         }
         if phrase.latest?.words.contains(where: { !$0.match }) == true {
-            Text("Underline = check word").font(.system(size: 11)).foregroundStyle(Color.warn)
+            Text("Underline = check word").font(.system(size: 11)).foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
         if !ending(s.voice?.src ?? []).isEmpty {
             Text("Arrow = voice ending").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -783,27 +804,57 @@ struct NextStepView: View {
 
 struct VoiceMapView: View {
     @EnvironmentObject var s: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let phrase: Phrase
     @State private var expanded = false
     var len: Double { max(phrase.end - phrase.start, 0.01) }
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            TimelineView(.animation(minimumInterval: 0.05, paused: !(s.recording || s.isPlaying || s.isTakePlaying))) { _ in
-                let you = s.live?.track ?? s.voice?.you, head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), len) : s.position
+            TimelineView(.animation(minimumInterval: 0.05, paused: reduceMotion || !(s.recording || s.isPlaying || s.isTakePlaying))) { _ in
+                let you = (reduceMotion ? nil : s.live?.track) ?? s.voice?.you, head = s.isPlaying ? min(max(0, (s.original?.currentTime ?? phrase.start) - phrase.start), len) : s.position
                 VStack(alignment: .leading, spacing: 10) {
                     Canvas { ctx, size in draw(ctx, size, you, head) }.frame(height: 150)
-                        .accessibilityLabel("Relative pitch of the example and your take, with quiet gaps")
+                        .accessibilityHidden(true)
                         .help("The line rises when the voice goes up and falls when it goes down. Match its shape, not the speaker's natural pitch.")
                     HStack(spacing: 14) {
                         HStack(spacing: 6) { Capsule().fill(Color.pitch).frame(width: 14, height: 3); muted("Example") }
-                        if s.recording || you?.isEmpty == false { HStack(spacing: 6) { Capsule().fill(Color.violet).frame(width: 14, height: 3); muted("You") } }
+                        if you?.isEmpty == false {
+                            HStack(spacing: 6) {
+                                Capsule().stroke(Color.violet, style: StrokeStyle(lineWidth: 2, dash: [3, 3])).frame(width: 14, height: 2)
+                                muted("You (dashed)")
+                            }
+                        }
                         muted("Shaded gaps = silence")
+                    }.accessibilityHidden(true)
+                    if let voice = s.voice {
+                        if voice.src.contains(where: { $0.st != nil }) {
+                            muted(pitchSummary("Example", track: voice.src)).fixedSize(horizontal: false, vertical: true)
+                            let pauses = voice.pauses.map { String(format: "%.1f to %.1f", $0.0, $0.1) }
+                            muted(pauses.isEmpty ? "No pauses detected in the example." :
+                                "Estimated example pauses in seconds: \(pauses.joined(separator: "; ")).")
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            muted("No pitch detected in the example.")
+                        }
+                        if let take = voice.you {
+                            muted(pitchSummary("Your take", track: take)).fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else if !s.voiceFailed {
+                        muted("Pitch detail is loading.")
                     }
                     muted("Relative pitch. Saved takes are fitted to the example’s length to compare shape; use playback to compare timing.").fixedSize(horizontal: false, vertical: true)
                     if s.voiceFailed { muted("Couldn't load pitch detail. Try switching phrases and returning.") }
                 }.padding(12).background(RoundedRectangle(cornerRadius: 12).fill(Color.subtle)).padding(.top, 8)
             }
         } label: { Text(expanded ? "Pitch detail" : "Show pitch detail").font(.system(size: 12, weight: .medium)) }
+    }
+
+    private func pitchSummary(_ label: String, track: [Pt]) -> String {
+        let direction = ending(track)
+        if direction.hasPrefix("goes up") { return "\(label) pitch rises at the end." }
+        if direction.hasPrefix("goes down") { return "\(label) pitch falls at the end." }
+        if direction.hasPrefix("stays") { return "\(label) pitch stays level at the end." }
+        return "\(label) has too little pitch detail to estimate an ending."
     }
 
     func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
@@ -818,7 +869,7 @@ struct VoiceMapView: View {
         func X(_ x: Double) -> CGFloat { left + CGFloat(x / span) * (right - left) }
         func Y(_ st: Double) -> CGFloat { min(bot - 2, max(top + 2, yHi + CGFloat((hi - st) / (hi - lo)) * (yLo - yHi))) }
         func stAt(_ x: Double, _ t: [Pt] = src) -> Double? { t.filter { $0.st != nil && abs($0.x - x) <= 0.15 }.min { abs($0.x - x) < abs($1.x - x) }?.st }
-        func line(_ t: [Pt], _ c: Color, _ width: CGFloat) {
+        func line(_ t: [Pt], _ c: Color, _ width: CGFloat, dash: [CGFloat] = []) {
             var p = Path(), run: [CGPoint] = [], prev: Double? = nil
             func flush() {
                 if run.count > 1 {
@@ -834,7 +885,7 @@ struct VoiceMapView: View {
                 run.append(CGPoint(x: X(q.x), y: Y(st))); prev = q.x
             }
             flush()
-            ctx.stroke(p, with: .color(c), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+            ctx.stroke(p, with: .color(c), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: dash))
         }
         var placed: [CGRect] = []
         func label(_ s: String, _ at: CGPoint, _ anchor: UnitPoint, _ c: Color, _ size: CGFloat = 10, _ weight: Font.Weight = .regular) {
@@ -855,7 +906,7 @@ struct VoiceMapView: View {
         }
         line(src, Color.ink.opacity(0.07), 9)
         line(src, Color.pitch.opacity(you?.isEmpty == false ? 0.55 : 1), 3.5)
-        line(you ?? [], .violet, 2.5)
+        line(you ?? [], .violet, 2.5, dash: [5, 4])
         let pts = src.filter { $0.st != nil }
         if let first = pts.first, let lastX = pts.last?.x, lastX - first.x > 0.8 {
             let end = ending(src), ex = lastX - 0.3
@@ -886,7 +937,7 @@ struct VoiceMapView: View {
         if s.recording, let L = s.live { ph = L.x }
         else if s.isTakePlaying, s.live == nil, let v, v.you != nil, let t = s.takePlayer { ph = t.currentTime * v.scale + v.shift }
         else if s.isPlaying || head > 0 { ph = head }
-        if let ph, ph >= 0 {
+        if !reduceMotion, let ph, ph >= 0 {
             ctx.stroke(Path { $0.move(to: CGPoint(x: X(ph), y: top - 2)); $0.addLine(to: CGPoint(x: X(ph), y: bot + 2)) }, with: .color(Color.ink.opacity(0.75)), lineWidth: 1.5)
             if let st = stAt(ph, s.recording ? (you ?? []) : src) { ctx.fill(Path(ellipseIn: CGRect(x: X(ph) - 4, y: Y(st) - 4, width: 8, height: 8)), with: .color(.ink)) }
         }
@@ -895,6 +946,7 @@ struct VoiceMapView: View {
 
 struct Inspector: View {
     @EnvironmentObject var s: Store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let lesson: Lesson
     var body: some View {
         VStack(spacing: 0) {
@@ -902,7 +954,7 @@ struct Inspector: View {
             Rectangle().fill(Color.line).frame(height: 1)
             ScrollViewReader { proxy in
                 ScrollView { if s.showFeedback { FeedbackPanel() } else { PhraseList(lesson: lesson) } }
-                    .onChange(of: s.index) { i in if !s.showFeedback { withAnimation { proxy.scrollTo(i, anchor: .center) } } }
+                    .onChange(of: s.index) { i in if !s.showFeedback { withAnimation(reduceMotion ? nil : .default) { proxy.scrollTo(i, anchor: .center) } } }
             }
         }.background(Color.surface.ignoresSafeArea())
     }
@@ -922,11 +974,14 @@ struct PhraseList: View {
                 Button { s.select(i) } label: {
                     HStack(alignment: .top, spacing: 10) {
                         Text(String(format: "%02d", i + 1)).font(.system(size: 11, weight: .medium)).monospacedDigit().foregroundStyle(.secondary).padding(.top, 1)
-                        Text(p.text).font(.system(size: 12.5)).lineLimit(2).multilineTextAlignment(.leading).foregroundStyle(Color.ink)
+                        Text(p.text).font(.body).fixedSize(horizontal: false, vertical: true).multilineTextAlignment(.leading).foregroundStyle(Color.ink)
                         Spacer(minLength: 4)
                         Image(systemName: p.practised == true ? "checkmark.circle.fill" : "circle").font(.system(size: 12)).foregroundStyle(p.practised == true ? Color.good : Color.secondary.opacity(0.5))
                     }
                 }.buttonStyle(RowStyle(active: i == s.index, pad: 8)).disabled(s.locked).id(i)
+                    .accessibilityLabel("Phrase \(i + 1), \(p.text)")
+                    .accessibilityValue(p.practised == true ? "Practised" : "Not yet practised")
+                    .accessibilityAddTraits(i == s.index ? .isSelected : [])
             }
         }.padding(12)
     }
@@ -941,7 +996,7 @@ struct TakeHistorySheet: View {
         let active = Set(s.lesson?.phrases.compactMap(\.revision) ?? [])
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Take history").font(.title2)
+                Text("Take history").font(.title2).accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -954,7 +1009,7 @@ struct TakeHistorySheet: View {
                 }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(takes) { take in
+                        ForEach(Array(takes.enumerated()), id: \.element.id) { index, take in
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
                                     if let created = take.created {
@@ -968,7 +1023,7 @@ struct TakeHistorySheet: View {
                                     Button(s.playingTakeID == take.id ? "Stop" : "Replay") {
                                         if s.playingTakeID == take.id { s.stopPlayback() }
                                         else { Task { await s.playTake(take) } }
-                                    }
+                                    }.accessibilityLabel(s.playingTakeID == take.id ? "Stop take \(index + 1)" : "Replay take \(index + 1)")
                                 }
                                 if let version = take.phraseRevision {
                                     Text(version.text).fixedSize(horizontal: false, vertical: true)
@@ -992,6 +1047,9 @@ struct TakeHistorySheet: View {
                 }.frame(height: 380)
             }
         }.padding(24).frame(width: 530)
+            .onChange(of: s.takePlaybackError) { error in
+                if let error { announcePracticeStatus(error) }
+            }
     }
 }
 
@@ -1001,7 +1059,7 @@ struct FeedbackPanel: View {
         VStack(alignment: .leading, spacing: 22) {
             if let r = s.phrase?.latest {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Latest take").font(.system(size: 15, weight: .semibold))
+                    Text("Latest take").font(.headline).accessibilityAddTraits(.isHeader)
                     muted("Practice estimates at \(speedLabel(r.playbackSpeed ?? 1)) speed, not pronunciation grades. Listen back to judge the details.").fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(spacing: 16) {
@@ -1033,8 +1091,9 @@ struct FeedbackPanel: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 1) { Text(title).font(.system(size: 13, weight: .medium)); muted(sub) }
                 Spacer()
-                Text(v.map { "\($0)%" } ?? "N/A").font(.system(size: 20, weight: .semibold)).monospacedDigit()
-            }
+                Text(v.map { "\($0)%" } ?? "N/A").font(.title2.weight(.semibold)).monospacedDigit()
+                    .accessibilityLabel(v.map { "\($0) percent" } ?? "Unavailable")
+            }.accessibilityElement(children: .combine)
             Bar(value: Double(v ?? 0) / 100).frame(height: 4)
         }
     }
