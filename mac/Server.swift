@@ -14,13 +14,23 @@ struct AppError: LocalizedError {
 }
 
 final class API {
-    let token: String
+    private(set) var token: String
     init(token: String) { self.token = token }
 
     static func fetchToken() async -> String? {
         guard let (data, _) = try? await URLSession.shared.data(from: base), let html = String(data: data, encoding: .utf8),
               let r = html.range(of: #"name="shadow-token" content="[^"]+""#, options: .regularExpression) else { return nil }
         return String(html[r]).components(separatedBy: "\"").dropLast().last
+    }
+
+    func submitTake(_ path: String, file: URL) async throws -> TakeSubmission {
+        do {
+            return try await get(TakeSubmission.self, path, method: "POST", contentType: "audio/wav", file: file)
+        } catch let error as AppError where error.statusCode == 403 && error.message == "Refresh the app and try again." {
+            guard let refreshed = await Self.fetchToken() else { throw error }
+            token = refreshed
+            return try await get(TakeSubmission.self, path, method: "POST", contentType: "audio/wav", file: file)
+        }
     }
 
     func send(_ path: String, method: String = "GET", body: Data? = nil, contentType: String? = nil, file: URL? = nil, timeout: TimeInterval = 120) async throws -> Data {

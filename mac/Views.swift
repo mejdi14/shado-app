@@ -576,7 +576,15 @@ struct PracticePanel: View {
                 HStack(spacing: 12) { playbackButtons; Spacer(minLength: 8); recordButton }
                 VStack(alignment: .leading, spacing: 12) { HStack(spacing: 12) { playbackButtons }; recordButton }
             }
-            if phrase.latest == nil && !s.recording && s.microphoneProblem == nil {
+            if let message = s.takeDraftMessage {
+                muted(message)
+                HStack(spacing: 8) {
+                    Button("Submit captured take") { Task { await s.retryTake() } }.buttonStyle(PillStyle(primary: true))
+                    Button("Discard draft", action: s.discardTake).buttonStyle(PillStyle())
+                }
+            } else if s.recording {
+                muted("Stop recording to switch phrases or views.")
+            } else if phrase.latest == nil && s.microphoneProblem == nil {
                 muted("Use the microphone to record yourself saying the phrase.")
             }
             TimelineView(.animation(minimumInterval: 0.1, paused: !s.isPlaying)) { _ in
@@ -609,7 +617,7 @@ struct PracticePanel: View {
                     Text(s.recording ? "Stop · \(fmt(s.recordSeconds))" : s.microphoneProblem != nil ? "Retry recording" : phrase.latest == nil ? "Record" : "Try again").monospacedDigit()
                 }
             }.buttonStyle(PillStyle(primary: phrase.latest != nil || s.recording)).keyboardShortcut("r", modifiers: [])
-                .disabled(s.starting || s.stopping || s.busy != nil).help(s.recording ? "Stop recording (R)" : "Record a take (R)")
+                .disabled(!s.recording && s.locked).help(s.recording ? "Stop recording (R)" : "Record a take (R)")
         }
     }
 

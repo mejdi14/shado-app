@@ -42,7 +42,7 @@ enum PracticeDefaults {
     }
 }
 
-@MainActor final class Store: NSObject, ObservableObject, AVAudioPlayerDelegate {
+@MainActor final class Store: NSObject, ObservableObject, AVAudioPlayerDelegate, AVAudioRecorderDelegate {
     let api: API
     @Published var showLibrary = false
     @Published var showTraining = false
@@ -67,6 +67,7 @@ enum PracticeDefaults {
     @Published var microphoneProblem: MicrophoneProblem?
     @Published var stopping = false
     @Published var recordSeconds = 0.0
+    @Published private(set) var takeDraftMessage: String?
     @Published var showImport = false
     @Published private(set) var pendingImportJob: String?
     @Published var showEdit = false
@@ -92,7 +93,8 @@ enum PracticeDefaults {
     var takePlayer: AVAudioPlayer?
     private var takePlaybackRequest: UUID?
     var recorder: AVAudioRecorder?
-    var recordFile: URL?
+    private var takeDraft: (file: URL, lessonID: String, path: String)?
+    private var recordingStartInterrupted = false
     var engine: AVAudioEngine?
     var live: LiveTrack?
     var pollTask: Task<Void, Never>?
@@ -127,7 +129,7 @@ enum PracticeDefaults {
         looping = defaults.object(forKey: PracticeDefaults.loopingKey) as? Bool ?? PracticeDefaults.looping
     }
 
-    var locked: Bool { navigating || recording || starting || stopping || busy != nil }
+    var locked: Bool { navigating || recording || starting || stopping || takeDraft != nil || busy != nil }
     var phrase: Phrase? { lesson.flatMap { $0.phrases.indices.contains(index) ? $0.phrases[index] : nil } }
     var sampleId: String? { library.first { $0.sample }?.id }
 
@@ -182,7 +184,7 @@ enum PracticeDefaults {
 
     func refreshLibrary() async throws {
         library = try await api.get([LibraryItem].self, "/api/library")
-        if let id = UserDefaults.standard.string(forKey: "shadow-lesson"), !library.contains(where: { $0.id == id }) {
+        if !recording, !starting, takeDraft == nil, let id = UserDefaults.standard.string(forKey: "shadow-lesson"), !library.contains(where: { $0.id == id }) {
             forgetLesson(id)
             show("Your last session is no longer available.")
         }
@@ -365,8 +367,11 @@ enum PracticeDefaults {
 
     func toggleRecording() async {
         if recording { stopRecording(); return }
-        guard phrase != nil, !locked else { return }
+        guard let lesson, let revision = phrase?.revision, !locked else { return }
+        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        let path = "/api/record/\(lesson.id)/\(index)/\(id)?speed=\(mode == .shadow ? speed : 1)&revision=\(revision)"
         starting = true
+        recordingStartInterrupted = false
         defer { starting = false }
         microphoneProblem = nil
         do { try await MicrophoneProblem.checkInput() }
@@ -374,19 +379,30 @@ enum PracticeDefaults {
             microphoneProblem = error as? MicrophoneProblem ?? .failed
             return
         }
+        guard !recordingStartInterrupted else {
+            show("The app went to the background before recording started. Select Record to try again.")
+            return
+        }
         stopPlayback()
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(id + ".wav")
         let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false]
         guard let r = try? AVAudioRecorder(url: url, settings: settings), r.record() else {
             try? FileManager.default.removeItem(at: url)
             microphoneProblem = .failed
             return
         }
-        recorder = r; recordFile = url
+        r.delegate = self
+        recorder = r; takeDraft = (url, lesson.id, path)
         recording = true; recordSeconds = 0
         startLive()
         let began = Date()
-        recordTask = Task { while !Task.isCancelled { recordSeconds = Date().timeIntervalSince(began); try? await Task.sleep(nanoseconds: 200_000_000) } }
+        recordTask = Task {
+            while !Task.isCancelled {
+                guard r.isRecording else { interruptRecording(); return }
+                recordSeconds = Date().timeIntervalSince(began)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
         autoStop = Task { try? await Task.sleep(nanoseconds: 34_000_000_000); if !Task.isCancelled { stopRecording() } }
         if mode == .shadow {
             playOriginal(once: true) { [weak self] in
@@ -396,13 +412,57 @@ enum PracticeDefaults {
         }
     }
 
-    func stopRecording() {
-        guard recording, !stopping else { return }
+    func interruptRecording() {
+        if starting { recordingStartInterrupted = true }
+        stopRecording(interrupted: true)
+    }
+
+    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        Task { @MainActor in
+            if self.recorder === recorder { self.interruptRecording() }
+        }
+    }
+
+    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        Task { @MainActor in
+            if self.recorder === recorder { self.interruptRecording() }
+        }
+    }
+
+    func stopRecording(interrupted: Bool = false) {
+        guard recording, let draft = takeDraft else { return }
         stopping = true; recording = false
         recordTask?.cancel(); autoStop?.cancel(); stopPlayback(); stopLive()
         recorder?.stop(); recorder = nil
-        let url = recordFile
-        Task { if let url { await finishRecording(url) }; stopping = false }
+        live = nil; stopping = false
+        guard let audio = try? AVAudioFile(forReading: draft.file), audio.length > 0 else {
+            discardTake()
+            show("No usable audio was captured. Try recording again.")
+            return
+        }
+        takeDraftMessage = interrupted
+            ? "Recording stopped after an interruption. You can submit the captured audio or discard it."
+            : "Your recording is ready to submit."
+        if !interrupted { Task { await retryTake() } }
+    }
+
+    func discardTake() {
+        guard !recording, !stopping, busy == nil, let draft = takeDraft else { return }
+        if removeTakeFile(draft.file) {
+            takeDraft = nil
+            takeDraftMessage = nil
+        } else {
+            takeDraftMessage = "The temporary recording could not be removed. Try discarding it again."
+        }
+    }
+
+    private func removeTakeFile(_ file: URL) -> Bool {
+        do {
+            try FileManager.default.removeItem(at: file)
+            return true
+        } catch {
+            return !FileManager.default.fileExists(atPath: file.path)
+        }
     }
 
     func startLive() {
@@ -435,25 +495,36 @@ enum PracticeDefaults {
         live = L
     }
 
-    func finishRecording(_ url: URL) async {
-        guard let l = lesson else { return }
-        let ix = index, speedUsed = mode == .shadow ? speed : 1
-        let revision = phrase?.revision.map { "&revision=\($0)" } ?? ""
-        defer { try? FileManager.default.removeItem(at: url) }
-        await guarded {
-            defer { busy = nil; live = nil }
-            busy = Busy(title: "Reviewing your take", message: "Listening to your recording…")
-            let j = try await api.get(JobStart.self, "/api/record/\(l.id)/\(ix)?speed=\(speedUsed)\(revision)", method: "POST", contentType: "audio/wav", file: url)
-            _ = try await waitJob(j.jobId, "Reviewing your take")
-            live = nil
-            try await loadLesson(l.id)
-            if j.takeId == nil || phrase?.latest?.id == j.takeId {
+    func retryTake() async {
+        guard !recording, !stopping, busy == nil, let draft = takeDraft else { return }
+        let title = "Reviewing your take"
+        busy = Busy(title: title, message: "Listening to your recording…")
+        defer { busy = nil }
+
+        let submission: TakeSubmission
+        do {
+            submission = try await api.submitTake(draft.path, file: draft.file)
+            if let jobID = submission.jobId { _ = try await waitJob(jobID, title) }
+        } catch {
+            takeDraftMessage = error.localizedDescription + " The captured audio is still here. Retry submission or discard it."
+            return
+        }
+        let removed = removeTakeFile(draft.file)
+        takeDraft = nil
+        takeDraftMessage = nil
+
+        do {
+            try await loadLesson(draft.lessonID)
+            if phrase?.latest?.id == submission.takeId {
                 showFeedback = true
                 show("Your feedback is ready. Listen back, then choose one detail to practise.")
             } else {
                 show("Your recording and feedback are saved in Take history.")
             }
+        } catch {
+            show("Your take was saved. Reopen this session to see the feedback.")
         }
+        if !removed { show("Your take was saved. The temporary recording could not be removed.") }
     }
 
     // MARK: Jobs, import, edit, delete

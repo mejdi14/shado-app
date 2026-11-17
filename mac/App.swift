@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import UniformTypeIdentifiers
 
 private let backupRestored = Notification.Name("ShadowStudioBackupRestored")
@@ -320,6 +321,18 @@ struct StudioHost: View {
             Button("Re-split phrases") { Task { await store.resplitLesson() } }
         } message: { Text("The audio is transcribed again and replaces the current phrases and edits. Practice starts at phrase one. Earlier recordings and feedback stay in Take history.") }
         .task { await store.start() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            if store.recording { store.interruptRecording() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didHideNotification)) { _ in
+            store.interruptRecording()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in
+            store.interruptRecording()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .AVAudioEngineConfigurationChange).receive(on: RunLoop.main)) { event in
+            if let engine = store.engine, event.object as? AVAudioEngine === engine { store.interruptRecording() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: backupRestored)) { _ in
             Task {
                 await store.guarded { try await store.refreshLibrary() }

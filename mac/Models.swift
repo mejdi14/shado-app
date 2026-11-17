@@ -22,6 +22,7 @@ struct EngineStatus: Decodable {
     let elevenLabsCLI: Bool?
 }
 struct JobStart: Codable { let jobId: String; let takeId: String? }
+struct TakeSubmission: Decodable { let jobId: String?; let takeId: String }
 struct Job: Codable { let state: String; let message: String?; let lessonId: String? }
 struct PDFVoice: Codable, Identifiable { let id: String; let name: String; let about: String; let gender: String; let accent: String }
 struct Busy { var title: String; var message: String }

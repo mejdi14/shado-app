@@ -29,6 +29,7 @@ LAN = os.environ.get('SHADOW_LAN') == '1'
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 executor = ThreadPoolExecutor(max_workers=1)
 jobs = {}
+record_jobs = {}
 models = {}
 LANGUAGES = {'en': 'English', 'fr': 'French'}
 model_lock = threading.Lock()
@@ -288,7 +289,10 @@ def job_start(action, message='Preparing audio…'):
                 target=Path(cleanup)
                 if target.parent==DATA and not (target/'lesson.json').exists(): shutil.rmtree(target,ignore_errors=True)
             jobs[jid]={'state':'error','message':msg if isinstance(exc,ValueError) else 'Processing failed. Check your connection for the first model download, then try again.'}
-    executor.submit(work)
+    try: executor.submit(work)
+    except Exception:
+        with file_lock: jobs.pop(jid,None)
+        raise
     return {'jobId':jid}
 
 def finish_import(lid, title, source, jid, language, segments=None):
@@ -403,7 +407,7 @@ def backup_revision(value, duration):
     backup_phrase_times(value, duration)
 
 def backup_take(value, lid, duration):
-    backup_object(value, 'id audio accuracy rhythm intonation durationRatio heard words curves tips created playbackSpeed phraseRevision recordedSeconds legacy')
+    backup_object(value, 'id audio accuracy rhythm intonation durationRatio heard words curves tips created playbackSpeed phraseRevision recordedSeconds legacy submissionHash')
     tid = value.get('id')
     check_backup(backup_id(tid) and value.get('audio') == f'/api/take/{lid}/{tid}')
     for key in ('accuracy', 'rhythm', 'intonation'):
@@ -414,6 +418,9 @@ def backup_take(value, lid, duration):
         check_backup(value.get(key) is None or backup_number(value[key], low, high))
     check_backup('heard' not in value or backup_text(value['heard'], 5000))
     check_backup(value.get('legacy') is None or type(value['legacy']) is bool)
+    if 'submissionHash' in value:
+        digest=value['submissionHash']
+        check_backup(isinstance(digest,str) and re.fullmatch(r'[a-f0-9]{64}',digest) is not None)
     if value.get('phraseRevision') is not None: backup_revision(value['phraseRevision'], duration)
     for mark in backup_list(value.get('words'), 5000):
         backup_object(mark, 'word match')
@@ -1079,21 +1086,41 @@ def compare(ref,take,text,heard,speed=1.0):
 
 @app.post('/api/record/{lid}/{index}')
 async def record(lid:str,index:int,request:Request,speed:float=1.0,revision:str|None=None):
+    return await queue_recording(lid,index,request,speed,revision)
+
+@app.post('/api/record/{lid}/{index}/{take_id}')
+async def retryable_record(lid:str,index:int,take_id:str,request:Request,revision:str,speed:float=1.0):
+    return await queue_recording(lid,index,request,speed,ident(revision),ident(take_id))
+
+def existing_recording(lesson, tid, fingerprint):
+    for take in lesson.get('takeHistory',[]):
+        if take.get('id')!=tid: continue
+        if not fingerprint or take.get('submissionHash')!=fingerprint:
+            raise HTTPException(409,'This take ID is already used by another recording.')
+        if not (folder(lesson['id'])/(tid+'.wav')).is_file():
+            raise HTTPException(409,'This take is in history but its saved audio is missing.')
+        return {'jobId':None,'takeId':tid}
+    if active:=record_jobs.get((lesson['id'],tid)):
+        if not fingerprint or active[0]!=fingerprint:
+            raise HTTPException(409,'This take ID is already used by another recording.')
+        return active[1]
+
+async def queue_recording(lid,index,request,speed,revision,take_id=None):
     if not math.isfinite(speed) or not .5<=speed<=1.5: raise HTTPException(400,'Invalid playback speed')
-    lesson=read_lesson(lid)
-    phrase=phrase_revision(lesson,index) if 0<=index<len(lesson['phrases']) else None
-    if revision is not None and (not phrase or revision!=phrase['id']):
-        phrase=lesson.get('archivedRevisions',{}).get(ident(revision))
-        if not phrase: raise HTTPException(409,'This phrase version is unavailable. Reopen the session before recording again.')
-    if not phrase: raise HTTPException(404,'Phrase not found')
     created=time.time()
     if int(request.headers.get('content-length','0'))>12*1024*1024: raise HTTPException(413,'Recording is too large.')
     raw=bytearray()
     async for chunk in request.stream():
         raw.extend(chunk)
         if len(raw)>12*1024*1024: raise HTTPException(413,'Recording is too large.')
-    tid=uuid.uuid4().hex; path=folder(lid)
-    temp=path/(tid+'.media'); pending=path/(tid+'.pending.wav'); wav=path/(tid+'.wav')
+    tid=take_id or uuid.uuid4().hex; path=folder(lid)
+    fingerprint=None
+    if take_id:
+        digest=hashlib.sha256(json.dumps([index,revision,speed]).encode())
+        digest.update(raw)
+        fingerprint=digest.hexdigest()
+    stage=uuid.uuid4().hex
+    temp=path/(stage+'.media'); pending=path/(stage+'.pending.wav'); wav=path/(tid+'.wav')
     def action(jid):
         try:
             jobs[jid]['message']='Listening to your take…'
@@ -1104,6 +1131,7 @@ async def record(lid:str,index:int,request:Request,speed:float=1.0,revision:str|
             heard=' '.join(s.text.strip() for s in transcribe(pending, lesson.get('language','en')))
             result=compare(ref,take,phrase['text'],heard,speed)
             result.update(id=tid,audio=f'/api/take/{lid}/{tid}',created=created,phraseRevision=phrase,recordedSeconds=len(take)/16000)
+            if fingerprint: result['submissionHash']=fingerprint
             with file_lock:
                 current=read_lesson(lid)
                 history=current.setdefault('takeHistory',[])
@@ -1112,7 +1140,8 @@ async def record(lid:str,index:int,request:Request,speed:float=1.0,revision:str|
                     if old:=legacy_take(current,index): history.append(old)
                     p['practised']=True; p['latest']=result; p['takes']=(p.get('takes') or 0)+1
                 history.append(result)
-                pending.replace(wav)
+                try: os.link(pending,wav)
+                except FileExistsError: raise ValueError('This take ID is already used by another audio file.')
                 try: save_lesson(current)
                 except Exception:
                     wav.unlink(missing_ok=True)
@@ -1124,13 +1153,29 @@ async def record(lid:str,index:int,request:Request,speed:float=1.0,revision:str|
             for file in (temp,pending):
                 try: file.unlink(missing_ok=True)
                 except OSError: pass
+            with file_lock: record_jobs.pop((lid,tid),None)
     with file_lock:
-        read_lesson(lid)
+        lesson=read_lesson(lid)
+        if existing:=existing_recording(lesson,tid,fingerprint):
+            return existing
+        if os.path.lexists(wav) or any((p.get('latest') or {}).get('id')==tid for p in lesson['phrases']):
+            raise HTTPException(409,'This take ID is already used by another recording or audio file.')
+        phrase=phrase_revision(lesson,index) if 0<=index<len(lesson['phrases']) else None
+        if revision is not None and (not phrase or revision!=phrase['id']):
+            phrase=lesson.get('archivedRevisions',{}).get(ident(revision))
+            if not phrase: raise HTTPException(409,'This phrase version is unavailable. Reopen the session before recording again.')
+        if not phrase: raise HTTPException(404,'Phrase not found')
         try:
-            temp.write_bytes(raw)
-            return job_start(action) | {'takeId':tid}
+            out=temp.open('xb')
+            try:
+                with out: out.write(raw)
+                job=job_start(action) | {'takeId':tid}
+                record_jobs[(lid,tid)]=(fingerprint,job)
+                return job
+            except Exception:
+                temp.unlink(missing_ok=True)
+                raise
         except Exception:
-            temp.unlink(missing_ok=True)
             raise HTTPException(500,'The recording could not be queued. Please try again.')
 
 @app.get('/api/wave/{lid}/{index}')

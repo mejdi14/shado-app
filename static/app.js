@@ -1,7 +1,8 @@
 'use strict';
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
-const token = $('meta[name="shadow-token"]').content;
+let token = $('meta[name="shadow-token"]').content;
 let lesson=null, index=0, mode='listen', looping=false, concealed=false, busy=false, recorder=null, micStream=null, recording=false, starting=false, stopping=false, chunks=[], recordStart=0, recordTimer=null, autoStop=null, playbackTimer=null, abMode=false, playbackDone=null, sampleId=null;
+let takeDraft=null, captureInterrupted=false;
 const original=$('#originalAudio'), take=$('#takeAudio'), historyAudio=$('#historyAudio'), historyDialog=$('#takeHistoryDialog');
 const fmt=n=>`${Math.floor(n/60).toString().padStart(2,'0')}:${Math.floor(n%60).toString().padStart(2,'0')}`;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -97,7 +98,7 @@ function renderLibrary(){
   $('#libraryGrid').innerHTML=items.map(l=>`<button class="library-card card" data-lesson="${esc(l.id)}"><span>${l.sample?'GUIDED SAMPLE':(l.language==='fr'?'FRENCH':'ENGLISH')+' / '+(l.source.startsWith('http')?'YOUTUBE':l.source.startsWith('PDF,')?'PDF':'UPLOADED AUDIO')}</span><h3>${esc(l.title)}</h3><p>${l.count} phrases · ${fmt(l.duration)}<br>${l.practised}/${l.count} practised <span>↗</span></p></button>`).join('');
   $$('#libraryGrid [data-lesson]').forEach(b=>b.onclick=openLibrarySession);
 }
-async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#librarySample').hidden=!sampleId;libraryItems=list;renderLibrary();renderPracticeProgress();if(current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
+async function refreshLibrary(){const current=lesson,list=await api('/api/library');$('#libraryCount').textContent=list.length;sampleId=list.find(x=>x.sample)?.id;$('#sampleButton').disabled=$('#sampleButton').hidden=$('#sampleIntro').hidden=!sampleId;$('#sampleMissing').hidden=!!sampleId;$('#emptyImport').classList.toggle('primary',!sampleId);$('#emptyImport').classList.toggle('quiet',!!sampleId);$('#librarySample').hidden=!sampleId;libraryItems=list;renderLibrary();renderPracticeProgress();if(!recording&&!starting&&!stopping&&!takeDraft&&current&&lesson===current&&!list.some(item=>item.id===current.id))clearMissingLesson(current.id);return list}
 if(['127.0.0.1','localhost'].includes(location.hostname)){
   const exportButton=$('#exportBackup'),restoreButton=$('#restoreBackup'),input=$('#backupFile'),status=$('#backupStatus');
   exportButton.hidden=restoreButton.hidden=false;
@@ -130,7 +131,7 @@ $('#librarySearch').oninput=renderLibrary;
 for(const selector of ['#libraryLanguage','#libraryProgress','#librarySort'])$(selector).onchange=renderLibrary;
 $('#resetLibrary').onclick=()=>{$('#libraryControls').reset();renderLibrary();$('#librarySearch').focus()};
 $('#librarySample').onclick=guarded(async()=>{if(sampleId&&await loadLesson(sampleId))showView('studio')});
-function showView(view){if(recording||starting||stopping||busy)return;stopPlayback();$('#libraryView').hidden=view!=='library';$('#studioView').hidden=view==='library';$('#libraryNav').classList.toggle('active',view==='library');$('#practiceNav').classList.toggle('active',view!=='library');$('#pageLabel').textContent=view==='library'?'Your library':'Practice studio'}
+function showView(view){if(recording||starting||stopping||busy||takeDraft)return;stopPlayback();$('#libraryView').hidden=view!=='library';$('#studioView').hidden=view==='library';$('#libraryNav').classList.toggle('active',view==='library');$('#practiceNav').classList.toggle('active',view!=='library');$('#pageLabel').textContent=view==='library'?'Your library':'Practice studio'}
 async function loadLesson(id,restart=false){
   stopPlayback();
   let next;
@@ -165,7 +166,7 @@ async function loadLesson(id,restart=false){
 }
 function stopPlayback(){clearInterval(playbackTimer);playbackTimer=null;playbackDone=null;original.pause();take.pause();abMode=false;$('#playOriginal span').textContent='▶'}
 function renderPhrase(){stopPlayback();const p=lesson.phrases[index];$('#phraseText').textContent=p.text;$('#phraseCounter').textContent=`PHRASE ${String(index+1).padStart(2,'0')} / ${String(lesson.phrases.length).padStart(2,'0')}`;$('#phraseTime').textContent=`${fmt(p.start)} — ${fmt(p.end)}`;$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1;$('#phraseTotal').textContent=lesson.phrases.length;$('#completion').textContent=`${lesson.phrases.filter(p=>p.practised).length} / ${lesson.phrases.length} practised`;$('#phraseList').innerHTML=lesson.phrases.map((p,i)=>`<button class="phrase-item ${i===index?'active':''}" data-index="${i}" aria-current="${i===index?'true':'false'}"><span class="phrase-number">${String(i+1).padStart(2,'0')}</span><span class="phrase-item-text">${esc(p.text)}</span><span class="phrase-duration">${(p.end-p.start).toFixed(1)}s</span><span class="phrase-check">${p.practised?'✓':'○'}</span></button>`).join('');$$('[data-index]').forEach(b=>b.onclick=()=>selectPhrase(+b.dataset.index));$('#listenCue').hidden=$('#micCue').hidden=!!p.latest;$('#replayCue').hidden=$('#takeRow').hidden=!p.latest;if(p.latest){take.src=p.latest.audio;$('#takeCount').textContent=`${p.takes||1} take${p.takes>1?'s':''}`}setMode(mode);renderFeedback(p.latest);drawWave();}
-function selectPhrase(next){if(!lesson||recording||starting||stopping||busy)return;if(next<0||next>=lesson.phrases.length)return;index=next;rememberPhrase();renderPhrase()}
+function selectPhrase(next){if(!lesson||recording||starting||stopping||busy||takeDraft)return;if(next<0||next>=lesson.phrases.length)return;index=next;rememberPhrase();renderPhrase()}
 function setMode(value){if(recording||starting||stopping)return;mode=value;$$('.mode').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));concealed=mode==='recall';applyConceal();$('#recordTitle').textContent={listen:'Ready when you are.',recall:'Hold the phrase. Make it yours.',shadow:'Follow the speaker’s flow.'}[mode];$('#recordHint').textContent={listen:'Say the phrase the way you heard it.',recall:'The words are hidden. Record from memory.',shadow:'Use headphones. The original plays while you record.'}[mode]}
 function applyConceal(){$('#phraseText').classList.toggle('concealed',concealed);$('#phraseText').setAttribute('aria-hidden',concealed?'true':'false');$('#hideText').setAttribute('aria-pressed',concealed);$('#reveal').hidden=!concealed}
 async function playOriginal({once=false,onDone=null,rate=null}={}){const p=lesson?.phrases[index];if(!p)return;stopPlayback();original.playbackRate=rate??+$('#speed').value;original.currentTime=p.start;playbackDone=onDone;await original.play();$('#playOriginal span').textContent='Ⅱ';playbackTimer=setInterval(()=>{if(original.currentTime>=p.end||original.ended){if(looping&&!once&&!recording){original.currentTime=p.start;original.play().catch(e=>toast(e.message))}else{const done=playbackDone;stopPlayback();done?.()}}},15)}
@@ -191,12 +192,101 @@ function startLive(){stopLive();try{const C=window.AudioContext||window.webkitAu
 function stopLive(){liveCtx?.close().catch(()=>{});liveCtx=null}
 function sampleLive(){const L=live,now=performance.now(),p=lesson.phrases[index];L.an.getFloatTimeDomainData(L.buf);const{rms,hz}=detectPitch(L.buf,liveCtx.sampleRate);if(L.shadow){if(!original.paused)L.x=original.currentTime-p.start;else if(L.x!==null)L.x+=(now-L.at)/1000*L.speed}else if(L.x!==null)L.x+=(now-L.at)/1000;else if(hz&&rms>.015)L.x=onX(voice?.src);L.at=now;if(L.x===null)return;L.max=Math.max(L.max,rms);L.frames.push({x:L.x,rms,hz})}
 function animateVoice(){if(visRaf)return;const step=()=>{if(recording&&live&&liveCtx)sampleLive();paintWave();visRaf=recording||!original.paused||!take.paused?requestAnimationFrame(step):0};visRaf=requestAnimationFrame(step)}
-async function startRecording(){if(!lesson||busy||starting||stopping)return;if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)throw new Error('Microphone recording needs a supported browser. Open this local address in Safari or Chrome.');starting=true;setControlsLocked(true);stopPlayback();$('#recordButton').disabled=true;try{micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});const type=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));recorder=new MediaRecorder(micStream,type?{mimeType:type}:{});chunks=[];recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};recorder.onerror=()=>{toast('Microphone recording failed. Please try again.');if(recording)stopRecording()};recorder.onstop=()=>{releaseMic();if(!chunks.length){resetRecording();toast('No audio was captured. Try again.');return}const blob=new Blob(chunks,{type:recorder.mimeType});finishRecording(blob).catch(e=>toast(e.message)).finally(()=>resetRecording())};recording=true;starting=false;recorder.start(100);startLive();animateVoice();recordStart=Date.now();$('#recordButton').innerHTML='■ Stop recording';$('#recordButton').classList.add('recording');$('#recordButton').disabled=false;$('#recordingMeter').hidden=false;$('#recordingTime').textContent='00:00';recordTimer=setInterval(()=>$('#recordingTime').textContent=fmt((Date.now()-recordStart)/1000),200);setControlsLocked(true);if(mode==='shadow'){await playOriginal({once:true,onDone:()=>{clearTimeout(autoStop);autoStop=setTimeout(stopRecording,500)}})}autoStop=setTimeout(()=>{if(recording)stopRecording()},34000)}catch(e){if(recording&&recorder?.state==='recording'){chunks=[];recorder.onstop=()=>{releaseMic();resetRecording()};recorder.stop()}else{releaseMic();resetRecording()}live=null;throw new Error(e.name==='NotAllowedError'?'Microphone access was denied. Open this site’s settings from the address bar (Safari: Safari menu → Settings for This Website), set Microphone to Allow, then select Record again.':e.message)}finally{starting=false;$('#recordButton').disabled=false}}
+async function startRecording(){
+  if(!lesson?.phrases[index]?.revision||busy||recording||starting||stopping||takeDraft)return;
+  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)throw new Error('Microphone recording needs a supported browser. Open this local address in Safari or Chrome.');
+  const {id:lid}=lesson, ix=index, {revision}=lesson.phrases[ix], shadow=mode==='shadow';
+  const params=new URLSearchParams({speed:shadow?$('#speed').value:1,revision});
+  const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
+  const target='/api/record/'+lid+'/'+ix+'/'+id+'?'+params;
+  starting=true;captureInterrupted=false;setControlsLocked(true);stopPlayback();$('#recordButton').disabled=true;
+  window.addEventListener('beforeunload',protectRecording);
+  let capture;
+  try{
+    micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    if(captureInterrupted||document.hidden)throw new Error('The page was hidden before recording started. Select Record to try again.');
+    const type=['audio/webm;codecs=opus','audio/mp4','audio/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+    capture=recorder=new MediaRecorder(micStream,type?{mimeType:type}:{});
+    chunks=[];
+    recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+    recorder.onerror=()=>{if(recorder===capture)stopRecording(true)};
+    recorder.onstop=()=>{
+      if(recorder!==capture)return;
+      const interrupted=captureInterrupted||recording;
+      const blob=new Blob(chunks,{type:capture.mimeType});
+      if(blob.size)takeDraft={lid,target,blob};
+      resetRecording();
+      if(!blob.size){toast('No audio was captured. Try again.');return}
+      if(interrupted)showTakeDraft('Recording stopped after an interruption. You can submit the captured audio or discard it.');
+      else finishRecording();
+    };
+    for(const track of micStream.getAudioTracks()){
+      const interrupted=()=>{if(recorder===capture)stopRecording(true)};
+      track.addEventListener('ended',interrupted);
+      track.addEventListener('mute',interrupted);
+    }
+    recorder.start(100);recording=true;starting=false;
+    startLive();animateVoice();recordStart=Date.now();
+    $('#recordButton').innerHTML='■ Stop recording';$('#recordButton').classList.add('recording');$('#recordButton').disabled=false;
+    $('#recordingMeter').hidden=false;$('#recordingTime').textContent='00:00';
+    recordTimer=setInterval(()=>$('#recordingTime').textContent=fmt((Date.now()-recordStart)/1000),200);
+    autoStop=setTimeout(stopRecording,34000);
+    if(shadow)await playOriginal({once:true,onDone:()=>{clearTimeout(autoStop);autoStop=setTimeout(stopRecording,500)}});
+  }catch(e){
+    if(capture&&recorder!==capture)return;
+    if(recording)stopRecording(true);
+    else if(!stopping)resetRecording();
+    throw new Error(e.name==='NotAllowedError'?'Microphone access was denied. Open this site’s settings from the address bar (Safari: Safari menu → Settings for This Website), set Microphone to Allow, then select Record again.':e.message);
+  }
+}
+function protectRecording(event){event.preventDefault();event.returnValue='There is an unsaved take.'}
 function releaseMic(){micStream?.getTracks().forEach(t=>t.stop());micStream=null}
 function setControlsLocked(lock){$$('.mode,.chip,#speed,#prevPhrase,#nextPhrase,#editPhrase,#lessonMenu,#resplitLesson,.phrase-item,#newTop,#libraryNav,#practiceNav,#playTake,#compareAB,#openTakeHistory').forEach(b=>b.disabled=lock);if(!lock&&lesson){$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1}}
-function resetRecording(){recording=false;stopping=false;starting=false;stopLive();live=null;clearInterval(recordTimer);clearTimeout(autoStop);releaseMic();$('#recordButton').innerHTML='<span class="mic-dot"></span> Record a take';$('#recordButton').classList.remove('recording');$('#recordButton').disabled=false;$('#recordingMeter').hidden=true;setControlsLocked(false);if(lesson)paintWave()}
-function stopRecording(){if(!recording||stopping)return;stopping=true;recording=false;clearInterval(recordTimer);clearTimeout(autoStop);stopPlayback();$('#recordButton').disabled=true;if(recorder?.state==='recording')recorder.stop();else resetRecording()}
-async function finishRecording(blob){const lid=lesson.id,ix=index,p=lesson.phrases[ix];const params=new URLSearchParams({speed:mode==='shadow'?$('#speed').value:1});if(p.revision)params.set('revision',p.revision);try{setBusy(true,'Reviewing your take','Listening to your recording…');const j=await api(`/api/record/${lid}/${ix}?${params}`,{method:'POST',headers:{'Content-Type':blob.type},body:blob});await waitJob(j.jobId,'Reviewing your take');if(await loadLesson(lid)){const latest=lesson.phrases[index]?.latest;toast(!j.takeId||latest?.id===j.takeId?'Your feedback is ready. Listen back, then choose one detail to practise.':'Your recording and feedback are saved in Take history.')}}finally{setBusy(false)}}
+function resetRecording(){
+  recording=false;stopping=false;starting=false;stopPlayback();stopLive();live=null;
+  clearInterval(recordTimer);clearTimeout(autoStop);releaseMic();recorder=null;chunks=[];
+  $('#recordButton').innerHTML='<span class="mic-dot"></span> Record a take';
+  $('#recordButton').classList.remove('recording');$('#recordButton').disabled=Boolean(takeDraft);$('#recordingMeter').hidden=true;
+  setControlsLocked(Boolean(takeDraft));
+  if(!takeDraft)window.removeEventListener('beforeunload',protectRecording);
+  if(lesson)paintWave();
+}
+function stopRecording(interrupted=false){
+  if(!recording||stopping)return;
+  captureInterrupted=interrupted;stopping=true;recording=false;
+  clearInterval(recordTimer);clearTimeout(autoStop);stopPlayback();stopLive();$('#recordButton').disabled=true;
+  if(recorder.state!=='inactive')recorder.stop();
+}
+function showTakeDraft(message){$('#takeDraftMessage').textContent=message;$('#takeDraft').hidden=false}
+function clearTakeDraft(){takeDraft=null;$('#takeDraft').hidden=true;resetRecording()}
+async function finishRecording(){
+  if(!takeDraft||busy)return;
+  const {lid,target,blob}=takeDraft, title='Reviewing your take';
+  const upload=()=>api(target,{method:'POST',headers:{'Content-Type':blob.type},body:blob});
+  setBusy(true,title,'Listening to your recording…');
+  try{
+    let submission;
+    try{submission=await upload()}
+    catch(error){
+      if(error.status!==403||error.message!=='Refresh the app and try again.')throw error;
+      const html=new DOMParser().parseFromString(await (await apiResponse('/')).text(),'text/html');
+      token=html.querySelector('meta[name="shadow-token"]')?.content||token;
+      submission=await upload();
+    }
+    if(submission.jobId)await waitJob(submission.jobId,title);
+    setBusy(true,title,'Refreshing the phrase…');
+    clearTakeDraft();
+    try{
+      const refreshed=await loadLesson(lid);
+      const latest=refreshed?lesson.phrases[index]?.latest:null;
+      toast(latest?.id===submission.takeId?'Your feedback is ready. Listen back, then choose one detail to practise.':'Your recording and feedback are saved in Take history.');
+    }catch{toast('Your take was saved. Reopen this session to see the feedback.')}
+  }catch(error){showTakeDraft((error instanceof TypeError?'The local engine could not be reached.':error.message)+' The captured audio is still here. Retry submission or discard it.')}
+  finally{setBusy(false)}
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden){if(starting)captureInterrupted=true;stopRecording(true)}});
+$('#retryTake').onclick=finishRecording;
+$('#discardTakeDraft').onclick=()=>{if(!busy)clearTakeDraft()};
 const importJobKey='shadow-import-job';
 let pendingImport;
 try{pendingImport=sessionStorage.getItem(importJobKey)}catch{}
@@ -212,7 +302,7 @@ function showImportStatus(message){
   if(message!==undefined)$('#importError').textContent=message;
   if(!$('#importDialog').open)$('#importDialog').showModal();
 }
-function openImport(){if(recording||starting||stopping||busy)return;showImportStatus()}
+function openImport(){if(recording||starting||stopping||busy||takeDraft)return;showImportStatus()}
 const missingImport='The engine no longer has this import job. It may have restarted. Check your library before importing again.';
 const unconfirmedImport='The engine’s reply was interrupted before this browser got a job ID. Check your library before importing again.';
 async function recoverImport(){
@@ -268,7 +358,7 @@ $('#lessonMenu').onclick=()=>{stopPlayback();$('#deleteDialog').showModal()};$('
 catch(error){if(error.status!==404)throw error;$('#deleteDialog').close();clearMissingLesson(old);await refreshLibrary();return}
 $('#deleteDialog').close();forgetLesson(old);location.reload()});
 $('#resplitLesson').onclick=()=>{if(!lesson||busy)return;stopPlayback();$('#resplitDialog').showModal()};$('#cancelResplit').onclick=()=>$('#resplitDialog').close();$('#confirmResplit').onclick=guarded(async()=>{const lid=lesson.id;$('#resplitDialog').close();setBusy(true,'Finding new phrases');const j=await api('/api/resplit/'+lid,{method:'POST'}).catch(e=>{setBusy(false);throw e});await waitJob(j.jobId,'Finding new phrases');writePreference(phraseKey(lid),null);if(await loadLesson(lid,true))toast('New phrases are ready. Start again from the first phrase.')});
-document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT','BUTTON','SUMMARY'].includes(document.activeElement.tagName)||document.querySelector('dialog[open]')||busy||recording||starting||stopping)return;if(e.code==='Space'){e.preventDefault();guarded(togglePlay)()}if(e.code==='ArrowRight')selectPhrase(index+1);if(e.code==='ArrowLeft')selectPhrase(index-1)});window.addEventListener('resize',()=>{if(lesson)paintWave()});window.addEventListener('beforeunload',e=>{if(recording||starting||stopping||busy){e.preventDefault();e.returnValue=''}});
+document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT','BUTTON','SUMMARY'].includes(document.activeElement.tagName)||document.querySelector('dialog[open]')||busy||recording||starting||stopping||takeDraft)return;if(e.code==='Space'){e.preventDefault();guarded(togglePlay)()}if(e.code==='ArrowRight')selectPhrase(index+1);if(e.code==='ArrowLeft')selectPhrase(index-1)});window.addEventListener('resize',()=>{if(lesson)paintWave()});window.addEventListener('beforeunload',e=>{if(recording||starting||stopping||busy){e.preventDefault();e.returnValue=''}});
 guarded(async()=>{if(pendingImport&&await recoverImport())return;const list=await refreshLibrary(),last=readPreference(lastLessonKey);if(busy||lesson||last===null)return;if(list.some(x=>x.id===last))await loadLesson(last);else clearMissingLesson(last)})();
 
 function openTakeHistory(){
