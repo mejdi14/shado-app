@@ -608,6 +608,15 @@ def backup_add_file(archive, directory, filename, name, linked=None):
             check_backup(not stream.read(1))
         return value
 
+def clear_record_stages(lesson_fd, names):
+    # Stage files left by an interrupted recording; older engines also kept them hard-linked
+    # to the published take, which the exporter refuses. None are in use while no take is queued.
+    if record_jobs: return
+    for name in names:
+        if re.fullmatch(r'[0-9a-f]{32}\.(pending\.wav|media)', name):
+            try: os.unlink(name, dir_fd=lesson_fd)
+            except OSError: pass
+
 def export_backup():
     with backup_directory(DATA) as data_fd:
         output = backup_temporary_file(data_fd)
@@ -621,6 +630,7 @@ def export_backup():
                     with backup_directory(lid, data_fd) as lesson_fd:
                         names = os.listdir(lesson_fd)
                         if 'lesson.json' not in names: continue  # Import in progress.
+                        clear_record_stages(lesson_fd, names)
                         _, linked = backup_add_file(archive, lesson_fd, 'lesson.json', f'lessons/{lid}/lesson.json')
                         for name in names:
                             if name == 'audio.wav' or re.fullmatch(r'[0-9a-f]{32}\.wav', name):
@@ -710,7 +720,7 @@ def backup_sample_exists(data_fd):
             continue
     return None
 
-def publish_lesson(stage_fd, data_fd, lid):
+def publish_lesson(stage_fd, data_fd, lid, target=None):
     libc = ctypes.CDLL(None, use_errno=True)
     if sys.platform == 'darwin':
         rename, exclusive = libc.renameatx_np, 4  # RENAME_EXCL
@@ -719,7 +729,7 @@ def publish_lesson(stage_fd, data_fd, lid):
     else: raise OSError('Exclusive directory moves are unavailable.')
     rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
     name = lid.encode('ascii')
-    if rename(stage_fd, name, data_fd, name, exclusive) == 0: return True
+    if rename(stage_fd, name, data_fd, (target or lid).encode('ascii'), exclusive) == 0: return True
     error = ctypes.get_errno()
     if error == errno.EEXIST: return False
     raise OSError(error, os.strerror(error))
@@ -1286,8 +1296,16 @@ async def queue_recording(lid,index,request,speed,revision,take_id=None):
                     p['latest']=latest if latest and (latest.get('created') or 0)>created else result
                     p['practised']=True; p['takes']=(p.get('takes') or int(bool(latest)))+1
                 history.append(result)
-                try: os.link(pending,wav)
-                except FileExistsError: raise ValueError('This take ID is already used by another audio file.')
+                with backup_directory(path) as lesson_fd:
+                    try: published=publish_lesson(lesson_fd,lesson_fd,pending.name,wav.name)
+                    except OSError:
+                        try: os.link(pending,wav)
+                        except FileExistsError: published=False
+                        else:
+                            published=True
+                            try: pending.unlink()
+                            except OSError: pass
+                if not published: raise ValueError('This take ID is already used by another audio file.')
                 try: save_lesson(current)
                 except Exception:
                     wav.unlink(missing_ok=True)
