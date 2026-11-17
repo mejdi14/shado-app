@@ -6,28 +6,43 @@ let takeDraft=null, captureInterrupted=false;
 const original=$('#originalAudio'), take=$('#takeAudio'), historyAudio=$('#historyAudio'), historyDialog=$('#takeHistoryDialog');
 const fmt=n=>`${Math.floor(n/60).toString().padStart(2,'0')}:${Math.floor(n%60).toString().padStart(2,'0')}`;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function toast(msg){$('#toast').textContent=msg;$('#toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').hidden=true,6500)}
+function announce(msg){$('#practiceStatus').textContent=msg}
+function toast(msg){announce(msg);$('#toast').textContent=msg;$('#toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').hidden=true,6500)}
 async function apiResponse(path,options={}){options.headers={...(options.headers||{}),'X-Shadow-Token':token};const r=await fetch(path,options);if(!r.ok){let x;try{x=await r.json()}catch{}throw Object.assign(new Error(typeof x?.detail==='string'?x.detail:'Something went wrong. Please try again.'),{status:r.status})}return r}
 async function api(path,options){return (await apiResponse(path,options)).json()}
 function json(method,data){return{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}}
 function guarded(fn){return async(...args)=>{try{await fn(...args)}catch(e){toast(e.message)}}}
-function setBusy(value,title='Preparing your practice',message='Preparing audio…'){busy=value;$('#jobOverlay').hidden=!value;$('#jobTitle').textContent=title;$('#jobMessage').textContent=message;$('main').inert=value;$('.sidebar').inert=value}
+let focusBeforeJob=null;
+function setBusy(value,title='Preparing your practice',message='Preparing audio…'){
+  if(!value){clearBusy();return}
+  const firstUpdate=!busy, heading=$('#jobTitle');
+  if(firstUpdate)focusBeforeJob=document.activeElement;
+  busy=true;$('#jobOverlay').hidden=false;heading.textContent=title;$('#jobMessage').textContent=message;
+  $('main').inert=$('.sidebar').inert=$('.skip-link').inert=true;
+  if(firstUpdate)heading.focus();
+}
+function clearBusy(target=focusBeforeJob){
+  const overlay=$('#jobOverlay'), restoreFocus=overlay.contains(document.activeElement);
+  busy=false;overlay.hidden=true;
+  $('main').inert=$('.sidebar').inert=$('.skip-link').inert=false;
+  if(restoreFocus&&target?.isConnected)target.focus({preventScroll:true});
+  focusBeforeJob=null;
+}
 async function waitJob(id,title,importing=false){
   setBusy(true,title,importing?'Checking import status…':'Preparing audio…');
-  try{
-    while(true){
-      let j;
-      try{j=await api('/api/jobs/'+id)}
-      catch(error){if(importing&&error.status===404){saveImportJob(null);throw new Error(missingImport)}throw error}
-      $('#jobMessage').textContent=j.message||'Finishing up…';
-      if(j.state==='error'){
-        if(importing)saveImportJob(null);
-        throw new Error(j.message||'Processing failed. Please try again.');
-      }
-      if(j.state==='done')return j.lessonId;
-      await new Promise(r=>setTimeout(r,900));
+  while(true){
+    let j;
+    try{j=await api('/api/jobs/'+id)}
+    catch(error){if(importing&&error.status===404){saveImportJob(null);throw new Error(missingImport)}throw error}
+    const message=j.message||'Finishing up…';
+    if($('#jobMessage').textContent!==message)$('#jobMessage').textContent=message;
+    if(j.state==='error'){
+      if(importing)saveImportJob(null);
+      throw new Error(j.message||'Processing failed. Please try again.');
     }
-  }finally{if(!importing)setBusy(false)}
+    if(j.state==='done')return j.lessonId;
+    await new Promise(r=>setTimeout(r,900));
+  }
 }
 const lastLessonKey='shadow-lesson', phraseKey=id=>'shadow-phrase:'+id;
 function readPreference(key){try{return localStorage.getItem(key)}catch{return null}}
@@ -131,7 +146,18 @@ $('#librarySearch').oninput=renderLibrary;
 for(const selector of ['#libraryLanguage','#libraryProgress','#librarySort'])$(selector).onchange=renderLibrary;
 $('#resetLibrary').onclick=()=>{$('#libraryControls').reset();renderLibrary();$('#librarySearch').focus()};
 $('#librarySample').onclick=guarded(async()=>{if(sampleId&&await loadLesson(sampleId))showView('studio')});
-function showView(view){if(recording||starting||stopping||busy||takeDraft)return;stopPlayback();$('#libraryView').hidden=view!=='library';$('#studioView').hidden=view==='library';$('#libraryNav').classList.toggle('active',view==='library');$('#practiceNav').classList.toggle('active',view!=='library');$('#pageLabel').textContent=view==='library'?'Your library':'Practice studio'}
+function showView(view){
+  if(recording||starting||stopping||busy||takeDraft)return;
+  stopPlayback();
+  const library=view==='library';
+  $('#libraryView').hidden=!library;$('#studioView').hidden=library;
+  for(const [button,current] of [[$('#libraryNav'),library],[$('#practiceNav'),!library]]){
+    button.classList.toggle('active',current);
+    if(current)button.setAttribute('aria-current','page');else button.removeAttribute('aria-current');
+  }
+  $('#pageLabel').textContent=library?'Your library':'Practice studio';
+  $(library?'#libraryTitle':'#lessonTitle').focus();
+}
 async function loadLesson(id,{at=null,updated=null}={}){
   stopPlayback();
   let next;
@@ -170,15 +196,30 @@ function renderPhraseRestoreActions(){
   $('#restorePhraseSplit').hidden=!lesson.canRestorePhraseSplit;
   $('#phraseRestoreActions').hidden=!lesson.canUndoPhraseEdit&&!lesson.canRestorePhraseSplit;
 }
-function stopPlayback(){clearInterval(playbackTimer);playbackTimer=null;playbackDone=null;original.pause();take.pause();abMode=false;$('#playOriginal span').textContent='▶'}
-function renderPhrase(){stopPlayback();const p=lesson.phrases[index];$('#phraseText').textContent=p.text;$('#phraseCounter').textContent=`PHRASE ${String(index+1).padStart(2,'0')} / ${String(lesson.phrases.length).padStart(2,'0')}`;$('#phraseTime').textContent=`${fmt(p.start)} — ${fmt(p.end)}`;$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1;$('#phraseTotal').textContent=lesson.phrases.length;$('#completion').textContent=`${lesson.phrases.filter(p=>p.practised).length} / ${lesson.phrases.length} practised`;$('#phraseList').innerHTML=lesson.phrases.map((p,i)=>`<button class="phrase-item ${i===index?'active':''}" data-index="${i}" aria-current="${i===index?'true':'false'}"><span class="phrase-number">${String(i+1).padStart(2,'0')}</span><span class="phrase-item-text">${esc(p.text)}</span><span class="phrase-duration">${(p.end-p.start).toFixed(1)}s</span><span class="phrase-check">${p.practised?'✓':'○'}</span></button>`).join('');$$('[data-index]').forEach(b=>b.onclick=()=>selectPhrase(+b.dataset.index));$('#listenCue').hidden=$('#micCue').hidden=!!p.latest;$('#replayCue').hidden=$('#takeRow').hidden=!p.latest;if(p.latest){take.src=p.latest.audio;$('#takeCount').textContent=`${p.takes||1} take${p.takes>1?'s':''}`}setMode(mode);renderFeedback(p.latest);drawWave();}
-function selectPhrase(next){if(!lesson||recording||starting||stopping||busy||takeDraft)return;if(next<0||next>=lesson.phrases.length)return;index=next;rememberPhrase();renderPhrase()}
-function setMode(value){if(recording||starting||stopping)return;mode=value;$$('.mode').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));concealed=mode==='recall';applyConceal();$('#recordTitle').textContent={listen:'Ready when you are.',recall:'Hold the phrase. Make it yours.',shadow:'Follow the speaker’s flow.'}[mode];$('#recordHint').textContent={listen:'Say the phrase the way you heard it.',recall:'The words are hidden. Record from memory.',shadow:'Use headphones. The original plays while you record.'}[mode]}
-function applyConceal(){$('#phraseText').classList.toggle('concealed',concealed);$('#phraseText').setAttribute('aria-hidden',concealed?'true':'false');$('#hideText').setAttribute('aria-pressed',concealed);$('#reveal').hidden=!concealed}
-async function playOriginal({once=false,onDone=null,rate=null}={}){const p=lesson?.phrases[index];if(!p)return;stopPlayback();original.playbackRate=rate??+$('#speed').value;original.currentTime=p.start;playbackDone=onDone;await original.play();$('#playOriginal span').textContent='Ⅱ';playbackTimer=setInterval(()=>{if(original.currentTime>=p.end||original.ended){if(looping&&!once&&!recording){original.currentTime=p.start;original.play().catch(e=>toast(e.message))}else{const done=playbackDone;stopPlayback();done?.()}}},15)}
+function stopPlayback(){clearInterval(playbackTimer);playbackTimer=null;playbackDone=null;original.pause();take.pause();abMode=false;updatePlaybackButtons()}
+function updatePlaybackButtons(){
+  const playing=!original.paused&&!original.ended;
+  $('#playOriginal span').textContent=playing?'Ⅱ':'▶';
+  $('#playOriginal').setAttribute('aria-label',playing?(recording&&mode==='shadow'?'Stop original and recording':'Stop original phrase'):'Play original phrase');
+  $('#playTake').textContent=take.paused||take.ended?'Replay your take':'Stop your take';
+}
+function renderPhrase(){stopPlayback();const p=lesson.phrases[index];$('#phraseText').textContent=p.text;$('#phraseCounter').textContent=`Phrase ${index+1} of ${lesson.phrases.length}`;$('#phraseTime').textContent=`${fmt(p.start)} — ${fmt(p.end)}`;$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1;$('#phraseTotal').textContent=lesson.phrases.length;$('#completion').textContent=`${lesson.phrases.filter(p=>p.practised).length} / ${lesson.phrases.length} practised`;$('#phraseList').innerHTML=lesson.phrases.map((p,i)=>`<button class="phrase-item ${i===index?'active':''}" data-index="${i}" aria-current="${i===index?'true':'false'}"><span class="phrase-number" aria-hidden="true">${String(i+1).padStart(2,'0')}</span><span class="visually-hidden">Phrase ${i+1}: </span><span class="phrase-item-text" lang="${lesson.language==='fr'?'fr':'en'}">${esc(p.text)}</span><span class="visually-hidden">, ${p.practised?'practised':'not yet practised'}</span><span class="phrase-duration" aria-hidden="true">${(p.end-p.start).toFixed(1)}s</span><span class="phrase-check" aria-hidden="true">${p.practised?'✓':'○'}</span></button>`).join('');$$('[data-index]').forEach(b=>b.onclick=()=>selectPhrase(+b.dataset.index,true));$('#listenCue').hidden=$('#micCue').hidden=!!p.latest;$('#replayCue').hidden=$('#takeRow').hidden=!p.latest;if(p.latest){take.src=p.latest.audio;$('#takeCount').textContent=`${p.takes||1} take${p.takes>1?'s':''}`}$('#phraseText').lang=lesson.language==='fr'?'fr':'en';setMode(mode,false);drawWave();}
+function selectPhrase(next,fromList=false){
+  if(!lesson||recording||starting||stopping||busy||takeDraft||next<0||next>=lesson.phrases.length)return;
+  const focused=document.activeElement;
+  index=next;rememberPhrase();renderPhrase();
+  if(fromList||focused.disabled)$('#phraseCounter').focus();
+  else announce($('#phraseCounter').textContent);
+}
+function setMode(value,repaint=true){if(recording||starting||stopping)return;mode=value;$$('.mode').forEach(b=>{const selected=b.dataset.mode===mode;b.classList.toggle('active',selected);b.setAttribute('aria-pressed',selected)});concealed=mode==='recall';applyConceal(repaint);$('#recordTitle').textContent={listen:'Ready when you are.',recall:'Hold the phrase. Make it yours.',shadow:'Follow the speaker’s flow.'}[mode];$('#recordHint').textContent={listen:'Say the phrase the way you heard it.',recall:'The words are hidden. Record from memory.',shadow:'Use headphones. The original plays while you record.'}[mode]}
+function applyConceal(repaint=true){$('#phraseText').classList.toggle('concealed',concealed);$('#phraseText').setAttribute('aria-hidden',concealed?'true':'false');$('#hideText').setAttribute('aria-pressed',concealed);$('#reveal').hidden=!concealed;renderFeedback(lesson.phrases[index].latest);if(repaint)paintWave()}
+async function playOriginal({once=false,onDone=null,rate=null}={}){const p=lesson?.phrases[index];if(!p)return;stopPlayback();original.playbackRate=rate??+$('#speed').value;original.currentTime=p.start;playbackDone=onDone;await original.play();updatePlaybackButtons();playbackTimer=setInterval(()=>{if(original.currentTime>=p.end||original.ended){if(looping&&!once&&!recording){original.currentTime=p.start;original.play().catch(e=>toast(e.message))}else{const done=playbackDone;stopPlayback();done?.()}}},15)}
 async function togglePlay(){if(!lesson?.phrases[index]||starting||stopping)return;if(!original.paused){if(recording&&mode==='shadow'){stopRecording();return}stopPlayback()}else await playOriginal()}
-function renderFeedback(result){$('#accuracyScore').textContent=result?result.accuracy+'%':'—';$('#rhythmScore').textContent=result?result.rhythm+'%':'—';$('#pitchScore').textContent=result?(result.intonation===null?'N/A':result.intonation+'%'):'—';$('#feedbackIntro').textContent=result?`Latest take · practice estimates at ${result.playbackSpeed||1}× speed. Listen back to judge the details.`:'Record a take to see where you match the speaker, and what to try next.';if(result){$('#tips').innerHTML='<span>↗</span><div><b>One thing at a time.</b><ul>'+result.tips.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';if(!concealed){let wi=0,end=0,html='';const text=lesson.phrases[index].text;for(const match of text.matchAll(/\p{L}[\p{L}\p{M}]*(?:['’]\p{L}[\p{L}\p{M}]*)*/gu)){const mark=result.words[wi++];html+=esc(text.slice(end,match.index))+`<span class="${mark?.match?'matched':'missed'}">${esc(match[0])}</span>`;end=match.index+match[0].length}$('#phraseText').innerHTML=html+esc(text.slice(end))};}else{$('#tips').innerHTML='<span>↗</span><div><b>Make room for your own voice.</b><p>You’re practising delivery, not becoming someone else. Use headphones for a cleaner comparison.</p></div>'}}
+function renderFeedback(result){$('#accuracyScore').textContent=result?result.accuracy+'%':'—';$('#rhythmScore').textContent=result?result.rhythm+'%':'—';$('#pitchScore').textContent=result?(result.intonation===null?'N/A':result.intonation+'%'):'—';$('#feedbackIntro').textContent=result?`Latest take · practice estimates at ${result.playbackSpeed||1}× speed. Listen back to judge the details.`:'Record a take to see where you match the speaker, and what to try next.';const wordFeedback=$('#wordFeedback');
+wordFeedback.hidden=!result||concealed;
+if(result){$('#tips').innerHTML='<span>↗</span><div><b>One thing at a time.</b><ul>'+result.tips.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';if(!concealed){let wi=0,end=0,html='';const flagged=[],text=lesson.phrases[index].text;for(const match of text.matchAll(/\p{L}[\p{L}\p{M}]*(?:['’]\p{L}[\p{L}\p{M}]*)*/gu)){const mark=result.words[wi++];if(!mark?.match)flagged.push(match[0]);html+=esc(text.slice(end,match.index))+`<span class="${mark?.match?'matched':'missed'}">${esc(match[0])}</span>`;end=match.index+match[0].length}$('#phraseText').innerHTML=html+esc(text.slice(end));wordFeedback.textContent=flagged.length?'Underlined words to review: '+flagged.join(', ')+'.':'No words were flagged for review.'};}else{$('#tips').innerHTML='<span>↗</span><div><b>Make room for your own voice.</b><p>You’re practising delivery, not becoming someone else. Use headphones for a cleaner comparison.</p></div>'}}
 function canvasCtx(el){const dpr=window.devicePixelRatio||1,r=el.getBoundingClientRect(),W=Math.max(1,Math.round(r.width*dpr)),H=Math.max(1,Math.round(r.height*dpr));if(el.width!==W)el.width=W;if(el.height!==H)el.height=H;const ctx=el.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,r.width,r.height);return{ctx,w:r.width,h:r.height}}
+const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
 const ACT=.1;let voiceErr=false,voice=null,live=null,liveCtx=null,visRaf=0;
 function smoothPitch(v){const out=v.slice();for(let i=0;i<v.length;){if(v[i]==null){i++;continue}let j=i;while(j<v.length&&v[j]!=null)j++;const m=[];for(let k=i;k<j;k++){const w=v.slice(Math.max(i,k-2),Math.min(j,k+3)).sort((a,b)=>a-b);m.push(w[w.length>>1])}for(let k=i;k<j;k++)out[k]=j-i<4?null:(m[Math.max(0,k-i-1)]+m[k-i]+m[Math.min(j-i-1,k-i+1)])/3;i=j}return out}
 function mkTrack(e,hz,xOf){const v=hz.filter(h=>h).sort((a,b)=>a-b),med=v[v.length>>1];const st=smoothPitch(e.map((_,i)=>{if(!hz[i]||!med)return null;let s=12*Math.log2(hz[i]/med);if(s>8)s-=12;else if(s<-8)s+=12;return Math.abs(s)>12?null:s}));return e.map((en,i)=>({x:xOf(i),e:en,st:st[i]}))}
@@ -191,13 +232,14 @@ async function drawWave(){if(!lesson)return;const current=lesson,lid=current.id,
 function liveTrack(){const L=live;return mkTrack(L.frames.map(f=>f.rms/L.max),L.frames.map(f=>f.hz),i=>L.frames[i].x)}
 function pitchLine(ctx,t,X,Y,color,width){if(!t?.length)return;ctx.strokeStyle=color;ctx.lineWidth=width;ctx.lineJoin=ctx.lineCap='round';ctx.beginPath();let run=[],prev=null;const flush=()=>{if(run.length>1){ctx.moveTo(...run[0]);for(let i=1;i<run.length;i++)ctx.quadraticCurveTo(...run[i-1],(run[i-1][0]+run[i][0])/2,(run[i-1][1]+run[i][1])/2);ctx.lineTo(...run.at(-1))}run=[]};for(const q of t){if(q.st===null)continue;if(prev!==null&&q.x-prev>=.2)flush();run.push([X(q.x),Y(q.st)]);prev=q.x}flush();ctx.stroke()}
 function box(ctx,x,y,w,h,r){ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,w,h,r):ctx.rect(x,y,w,h);ctx.fill()}
-function voiceTips(p,v,you){const W=p.words||[],cl=s=>s.trim().replace(/^[^\w']+|[^\w']+$/g,''),strong=[...v.stress].sort((a,b)=>a-b).filter(i=>i<W.length).slice(0,4).map(i=>cl(W[i].word)),after=[...new Set(v.pauses.map(([a])=>W.findLast(wd=>wd.start-p.start<a)).filter(Boolean).map(wd=>'“'+cl(wd.word)+'”'))],end=ending(v.src),mine=you?.length?you:null,n=mine?pauses(mine).length:0,yEnd=mine?ending(mine):'',tip=(t,val,y,ok)=>`<div><small>${t}</small><b>${esc(val)}</b>${y!=null?`<span class="${ok?'ok':''}">You: ${esc(y)}${ok?' ✓':''}</span>`:''}</div>`;return tip('Say these stronger',strong.length?strong.join(', '):'No word stands out')+tip('Pause',after.length?'After '+after.join(', '):'None. Say it in one go.',mine?(n?n+(n>1?' pauses':' pause'):'no pauses'):null,n===v.pauses.length)+tip('At the end, the voice',end||'Hard to tell',mine?yEnd||'hard to tell':null,!!end&&yEnd===end)}
-function paintWave(){const{ctx,w,h}=canvasCtx($('#waveform'));const p=lesson?.phrases[index];if(!p)return;const src=voice?.src,you=live?liveTrack():voice?.you,span=Math.max(p.end-p.start,you?.length?you.at(-1).x+.1:0),X=x=>x/span*w,top=16,bot=h-30,mid=(top+bot)/2,Y=st=>mid-Math.max(-9,Math.min(9,st))*(bot-top)/20,ph=recording&&live?live.x:!original.paused?original.currentTime-p.start:!take.paused&&voice?.you&&!live?take.currentTime*voice.scale+voice.shift:null;ctx.textAlign='center';for(const[a,b]of voice?.pauses||[]){ctx.fillStyle='#f7ede8';box(ctx,X(a),top-6,X(b)-X(a),bot-top+12,4);if(X(b)-X(a)>=26){ctx.fillStyle='#c0786a';ctx.font='500 9px system-ui,sans-serif';ctx.fillText('pause',X((a+b)/2),top+5)}}pitchLine(ctx,src,X,Y,you?.length?'rgba(79,122,92,.4)':'#4f7a5c',3.5);pitchLine(ctx,you,X,Y,'#c58b53',2.5);let last=-1;(p.words||[]).forEach((wd,i)=>{const a=wd.start-p.start,b=wd.end-p.start,c=X((a+b)/2),em=voice?.stress?.has(i),now=ph!=null&&ph>=a&&ph<b,txt=wd.word.trim();ctx.font=(em?'700 12px':'11px')+' system-ui,sans-serif';const tw=ctx.measureText(txt).width;if(c-tw/2<=last+4)return;if(now){ctx.fillStyle='rgba(197,139,83,.2)';box(ctx,c-tw/2-5,h-20,tw+10,18,6)}ctx.fillStyle=em||now?'#20382f':'#8b948a';ctx.fillText(txt,c,h-7);last=c+tw/2});if(ph!=null&&ph>=0){ctx.strokeStyle='rgba(32,56,47,.35)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(X(ph),top-6);ctx.lineTo(X(ph),bot+4);ctx.stroke()}$('#youKey').hidden=!(recording||you?.length);const html=src?`<p>The line rises when the voice goes up and falls when it goes down. Match its shape, not the speaker&#39;s natural pitch.</p><div class="voice-tips">${voiceTips(p,voice,recording?null:you)}</div>`:voiceErr?`<p>Couldn&#39;t load the speaker&#39;s voice. Quit Shadow Studio and any Terminal window running it, then open it again.</p>`:'';if(html!==paintWave.html){paintWave.html=html;$('#voiceStats').innerHTML=html}}
+function voiceTips(p,v,you){const W=p.words||[],cl=s=>s.trim().replace(/^[^\w']+|[^\w']+$/g,''),strong=[...v.stress].sort((a,b)=>a-b).filter(i=>i<W.length).slice(0,4).map(i=>cl(W[i].word)),after=[...new Set(v.pauses.map(([a])=>W.findLast(wd=>wd.start-p.start<a)).filter(Boolean).map(wd=>'“'+cl(wd.word)+'”'))],end=ending(v.src),mine=you?.length?you:null,n=mine?pauses(mine).length:0,yEnd=mine?ending(mine):'',tip=(t,val,y,ok)=>`<div><small>${t}</small><b>${esc(val)}</b>${y!=null?`<span class="${ok?'ok':''}">You: ${esc(y)}${ok?' ✓':''}</span>`:''}</div>`;return tip('Say these stronger',concealed?'Reveal the phrase to see these words':strong.length?strong.join(', '):'No word stands out')+tip('Pause',concealed?`${v.pauses.length} detected`:after.length?'After '+after.join(', '):v.pauses.length?`${v.pauses.length} detected`:'None. Say it in one go.',mine?(n?n+(n>1?' pauses':' pause'):'no pauses'):null,n===v.pauses.length)+tip('At the end, the voice',end||'Hard to tell',mine?yEnd||'hard to tell':null,!!end&&yEnd===end)}
+function paintWave(){const{ctx,w,h}=canvasCtx($('#waveform'));const p=lesson?.phrases[index];if(!p)return;const src=voice?.src,you=live?liveTrack():voice?.you,span=Math.max(p.end-p.start,you?.length?you.at(-1).x+.1:0),X=x=>x/span*w,top=16,bot=h-30,mid=(top+bot)/2,Y=st=>mid-Math.max(-9,Math.min(9,st))*(bot-top)/20,ph=reducedMotion.matches?null:recording&&live?live.x:!original.paused?original.currentTime-p.start:!take.paused&&voice?.you&&!live?take.currentTime*voice.scale+voice.shift:null;ctx.textAlign='center';for(const[a,b]of voice?.pauses||[]){ctx.fillStyle='#f7ede8';box(ctx,X(a),top-6,X(b)-X(a),bot-top+12,4);if(X(b)-X(a)>=26){ctx.fillStyle='#c0786a';ctx.font='500 9px system-ui,sans-serif';ctx.fillText('pause',X((a+b)/2),top+5)}}pitchLine(ctx,src,X,Y,you?.length?'rgba(79,122,92,.4)':'#4f7a5c',3.5);pitchLine(ctx,you,X,Y,'#c58b53',2.5);let last=-1;(concealed?[]:p.words||[]).forEach((wd,i)=>{const a=wd.start-p.start,b=wd.end-p.start,c=X((a+b)/2),em=voice?.stress?.has(i),now=ph!=null&&ph>=a&&ph<b,txt=wd.word.trim();ctx.font=(em?'700 12px':'11px')+' system-ui,sans-serif';const tw=ctx.measureText(txt).width;if(c-tw/2<=last+4)return;if(now){ctx.fillStyle='rgba(197,139,83,.2)';box(ctx,c-tw/2-5,h-20,tw+10,18,6)}ctx.fillStyle=em||now?'#20382f':'#8b948a';ctx.fillText(txt,c,h-7);last=c+tw/2});if(ph!=null&&ph>=0){ctx.strokeStyle='rgba(32,56,47,.35)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(X(ph),top-6);ctx.lineTo(X(ph),bot+4);ctx.stroke()}$('#youKey').hidden=!(recording||you?.length);const html=src?`<p>The line rises when the voice goes up and falls when it goes down. Match its shape, not the speaker&#39;s natural pitch.</p><div class="voice-tips">${voiceTips(p,voice,recording?null:you)}</div>`:voiceErr?`<p>Couldn&#39;t load the speaker&#39;s voice. Quit Shadow Studio and any Terminal window running it, then open it again.</p>`:'';if(html!==paintWave.html){paintWave.html=html;$('#voiceStats').innerHTML=html}}
 function detectPitch(buf,sr){const n=buf.length>>1,s=sr/2,x=new Float32Array(n);let m=0,e=0;for(let i=0;i<n;i++){x[i]=(buf[2*i]+buf[2*i+1])/2;m+=x[i]}m/=n;for(let i=0;i<n;i++){x[i]-=m;e+=x[i]*x[i]}const rms=Math.sqrt(e/n);if(rms<.01)return{rms,hz:null};const lo=Math.floor(s/400),hi=Math.min(n>>1,Math.ceil(s/60)),c=new Float32Array(hi+2);let best=0;for(let l=lo;l<=hi;l++){let sum=0;for(let i=0;i<n-l;i++)sum+=x[i]*x[i+l];c[l]=sum/(n-l);if(c[l]>best)best=c[l]}if(best/(e/n)<.45)return{rms,hz:null};for(let l=lo+1;l<hi;l++)if(c[l]>=.9*best&&c[l]>=c[l-1]&&c[l]>=c[l+1])return{rms,hz:s/l};return{rms,hz:null}}
 function startLive(){stopLive();try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),an=ctx.createAnalyser(),g=ctx.createGain();an.fftSize=2048;g.gain.value=0;ctx.createMediaStreamSource(micStream).connect(an);an.connect(g);g.connect(ctx.destination);ctx.resume().catch(()=>{});liveCtx=ctx;live={key:lesson.id+':'+index,an,buf:new Float32Array(2048),frames:[],shadow:mode==='shadow',speed:mode==='shadow'?+$('#speed').value:1,x:null,at:0,max:.02}}catch{live=null}}
 function stopLive(){liveCtx?.close().catch(()=>{});liveCtx=null}
 function sampleLive(){const L=live,now=performance.now(),p=lesson.phrases[index];L.an.getFloatTimeDomainData(L.buf);const{rms,hz}=detectPitch(L.buf,liveCtx.sampleRate);if(L.shadow){if(!original.paused)L.x=original.currentTime-p.start;else if(L.x!==null)L.x+=(now-L.at)/1000*L.speed}else if(L.x!==null)L.x+=(now-L.at)/1000;else if(hz&&rms>.015)L.x=onX(voice?.src);L.at=now;if(L.x===null)return;L.max=Math.max(L.max,rms);L.frames.push({x:L.x,rms,hz})}
-function animateVoice(){if(visRaf)return;const step=()=>{if(recording&&live&&liveCtx)sampleLive();paintWave();visRaf=recording||!original.paused||!take.paused?requestAnimationFrame(step):0};visRaf=requestAnimationFrame(step)}
+reducedMotion.addEventListener('change',()=>{if(lesson?.phrases[index])paintWave()});
+function animateVoice(){updatePlaybackButtons();if(visRaf)return;const step=()=>{if(recording&&live&&liveCtx)sampleLive();if(!reducedMotion.matches)paintWave();visRaf=recording||!original.paused||!take.paused?requestAnimationFrame(step):0};visRaf=requestAnimationFrame(step)}
 async function startRecording(){
   if(!lesson?.phrases[index]?.revision||busy||recording||starting||stopping||takeDraft)return;
   if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder)throw new Error('Microphone recording needs a supported browser. Open this local address in Safari or Chrome.');
@@ -205,7 +247,7 @@ async function startRecording(){
   const params=new URLSearchParams({speed:shadow?$('#speed').value:1,revision});
   const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
   const target='/api/record/'+lid+'/'+ix+'/'+id+'?'+params;
-  starting=true;captureInterrupted=false;setControlsLocked(true);stopPlayback();$('#recordButton').disabled=true;
+  starting=true;captureInterrupted=false;setControlsLocked(true);stopPlayback();$('#recordButton').setAttribute('aria-disabled','true');
   window.addEventListener('beforeunload',protectRecording);
   let capture;
   try{
@@ -233,8 +275,9 @@ async function startRecording(){
     }
     recorder.start(100);recording=true;starting=false;
     startLive();animateVoice();recordStart=Date.now();
-    $('#recordButton').innerHTML='■ Stop recording';$('#recordButton').classList.add('recording');$('#recordButton').disabled=false;
+    $('#recordButton').innerHTML='■ Stop recording';$('#recordButton').classList.add('recording');$('#recordButton').removeAttribute('aria-describedby');$('#recordButton').removeAttribute('aria-disabled');
     $('#recordingMeter').hidden=false;$('#recordingTime').textContent='00:00';
+    announce('Recording. Stop recording to switch phrases or views.');
     recordTimer=setInterval(()=>$('#recordingTime').textContent=fmt((Date.now()-recordStart)/1000),200);
     autoStop=setTimeout(stopRecording,34000);
     if(shadow)await playOriginal({once:true,onDone:()=>{clearTimeout(autoStop);autoStop=setTimeout(stopRecording,500)}});
@@ -247,12 +290,12 @@ async function startRecording(){
 }
 function protectRecording(event){event.preventDefault();event.returnValue='There is an unsaved take.'}
 function releaseMic(){micStream?.getTracks().forEach(t=>t.stop());micStream=null}
-function setControlsLocked(lock){$$('.mode,.chip,#speed,#prevPhrase,#nextPhrase,#editPhrase,#lessonMenu,#resplitLesson,#undoPhraseEdit,#restorePhraseSplit,.phrase-item,#newTop,#libraryNav,#practiceNav,#playTake,#compareAB,#openTakeHistory').forEach(b=>b.disabled=lock);if(!lock&&lesson){$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1}}
+function setControlsLocked(lock){$$('.mode,.chip,#speed,#prevPhrase,#nextPhrase,#editPhrase,#lessonMenu,#resplitLesson,#undoPhraseEdit,#restorePhraseSplit,.phrase-item,#newTop,#libraryNav,#practiceNav,#playTake,#compareAB,#openTakeHistory,#choosePhrase,#reveal').forEach(b=>b.disabled=lock);if(!lock&&lesson){$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1}}
 function resetRecording(){
   recording=false;stopping=false;starting=false;stopPlayback();stopLive();live=null;
   clearInterval(recordTimer);clearTimeout(autoStop);releaseMic();recorder=null;chunks=[];
   $('#recordButton').innerHTML='<span class="mic-dot"></span> Record a take';
-  $('#recordButton').classList.remove('recording');$('#recordButton').disabled=Boolean(takeDraft);$('#recordingMeter').hidden=true;
+  $('#recordButton').classList.remove('recording');$('#recordButton').setAttribute('aria-describedby','micCue');$('#recordButton').setAttribute('aria-disabled',Boolean(takeDraft));$('#recordingMeter').hidden=true;
   setControlsLocked(Boolean(takeDraft));
   if(!takeDraft)window.removeEventListener('beforeunload',protectRecording);
   if(lesson)paintWave();
@@ -260,10 +303,19 @@ function resetRecording(){
 function stopRecording(interrupted=false){
   if(!recording||stopping)return;
   captureInterrupted=interrupted;stopping=true;recording=false;
-  clearInterval(recordTimer);clearTimeout(autoStop);stopPlayback();stopLive();$('#recordButton').disabled=true;
+  clearInterval(recordTimer);clearTimeout(autoStop);stopPlayback();stopLive();$('#recordButton').setAttribute('aria-disabled','true');
   if(recorder.state!=='inactive')recorder.stop();
 }
-function showTakeDraft(message){$('#takeDraftMessage').textContent=message;$('#takeDraft').hidden=false}
+function showTakeDraft(message){
+  $('#takeDraftMessage').textContent=message;$('#takeDraft').hidden=false;
+  if(!busy)focusTakeDraft();
+}
+function focusTakeDraft(){
+  const focused=document.activeElement, retry=$('#retryTake');
+  if(focused===retry)return;
+  if([document.body,$('#recordButton'),$('#playOriginal')].includes(focused))retry.focus();
+  else announce($('#takeDraftMessage').textContent);
+}
 function clearTakeDraft(){takeDraft=null;$('#takeDraft').hidden=true;resetRecording()}
 async function finishRecording(){
   if(!takeDraft||busy)return;
@@ -288,11 +340,11 @@ async function finishRecording(){
       toast(latest?.id===submission.takeId?'Your feedback is ready. Listen back, then choose one detail to practise.':'Your recording and feedback are saved in Take history.');
     }catch{toast('Your take was saved. Reopen this session to see the feedback.')}
   }catch(error){showTakeDraft((error instanceof TypeError?'The local engine could not be reached.':error.message)+' The captured audio is still here. Retry submission or discard it.')}
-  finally{setBusy(false)}
+  finally{clearBusy($(takeDraft?'#retryTake':'#recordButton'));if(takeDraft)focusTakeDraft()}
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(starting)captureInterrupted=true;stopRecording(true)}});
 $('#retryTake').onclick=finishRecording;
-$('#discardTakeDraft').onclick=()=>{if(!busy)clearTakeDraft()};
+$('#discardTakeDraft').onclick=()=>{if(!busy){clearTakeDraft();$('#recordButton').focus()}};
 const importJobKey='shadow-import-job';
 let pendingImport;
 try{pendingImport=sessionStorage.getItem(importJobKey)}catch{}
@@ -333,7 +385,7 @@ async function recoverImport(){
   return true;
 }
 $('#checkImport').onclick=()=>{if(busy)return;$('#importDialog').close();void recoverImport()};
-['#newTop','#addLibrary','#emptyImport'].forEach(s=>$(s).onclick=openImport);$$('.close-dialog').forEach(b=>b.onclick=()=>b.closest('dialog').close());$('#cancelDelete').onclick=()=>$('#deleteDialog').close();$('#practiceNav').onclick=()=>showView('studio');$('#libraryNav').onclick=guarded(async()=>{await refreshLibrary();showView('library')});$('#continueLesson').onclick=guarded(async()=>{if(lesson?.phrases[index]&&await loadLesson(lesson.id))showView('studio')});$('#sampleButton').onclick=guarded(async()=>{if(sampleId)await loadLesson(sampleId)});$('#prevPhrase').onclick=()=>selectPhrase(index-1);$('#nextPhrase').onclick=()=>selectPhrase(index+1);$('#playOriginal').onclick=guarded(togglePlay);$('#loop').onclick=()=>{looping=!looping;$('#loop').setAttribute('aria-pressed',looping)};$('#hideText').onclick=()=>{concealed=!concealed;$('#phraseText').textContent=lesson.phrases[index].text;applyConceal()};$('#reveal').onclick=()=>{concealed=false;applyConceal()};$$('.mode').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#speed').onchange=()=>original.playbackRate=+$('#speed').value;$('#recordButton').onclick=guarded(async()=>recording?stopRecording():startRecording());$('#playTake').onclick=guarded(async()=>{if(!take.paused){stopPlayback();return}stopPlayback();take.currentTime=0;await take.play()});$('#compareAB').onclick=guarded(async()=>{await playOriginal({once:true,rate:lesson.phrases[index].latest?.playbackSpeed||1,onDone:()=>{take.currentTime=0;take.play().catch(e=>toast(e.message))}})});original.onplay=take.onplay=animateVoice;original.onerror=()=>toast(lesson?.sample?'The guided sample audio could not be loaded. Reopen it from the library or choose Add a voice.':'The audio could not be loaded. Reopen the session from your library.');
+['#newTop','#addLibrary','#emptyImport'].forEach(s=>$(s).onclick=openImport);$$('.close-dialog').forEach(b=>b.onclick=()=>b.closest('dialog').close());$('#cancelDelete').onclick=()=>$('#deleteDialog').close();$('#practiceNav').onclick=()=>showView('studio');$('#libraryNav').onclick=guarded(async()=>{await refreshLibrary();showView('library')});$('#continueLesson').onclick=guarded(async()=>{if(lesson?.phrases[index]&&await loadLesson(lesson.id))showView('studio')});$('#sampleButton').onclick=guarded(async()=>{if(sampleId&&await loadLesson(sampleId))showView('studio')});$('#choosePhrase').onclick=()=>$('#phraseListTitle').focus();$('#prevPhrase').onclick=()=>selectPhrase(index-1);$('#nextPhrase').onclick=()=>selectPhrase(index+1);$('#playOriginal').onclick=guarded(togglePlay);$('#loop').onclick=()=>{looping=!looping;$('#loop').setAttribute('aria-pressed',looping)};$('#hideText').onclick=()=>{concealed=!concealed;$('#phraseText').textContent=lesson.phrases[index].text;applyConceal()};$('#reveal').onclick=()=>{concealed=false;applyConceal();$('#hideText').focus()};$$('.mode').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));$('#speed').onchange=()=>original.playbackRate=+$('#speed').value;$('#recordButton').onclick=guarded(async()=>recording?stopRecording():startRecording());$('#playTake').onclick=guarded(async()=>{if(!take.paused){stopPlayback();return}stopPlayback();take.currentTime=0;await take.play()});$('#compareAB').onclick=guarded(async()=>{await playOriginal({once:true,rate:lesson.phrases[index].latest?.playbackSpeed||1,onDone:()=>{take.currentTime=0;take.play().catch(e=>toast(e.message))}})});original.onplay=take.onplay=animateVoice;original.onpause=take.onpause=take.onended=updatePlaybackButtons;original.onerror=()=>toast(lesson?.sample?'The guided sample audio could not be loaded. Reopen it from the library or choose Add a voice.':'The audio could not be loaded. Reopen the session from your library.');
 $('#audioFile').onchange=()=>{$('#fileLabel').textContent=$('#audioFile').files[0]?.name||'Choose an audio or video file';if($('#audioFile').files.length)$('#youtubeUrl').value=''};$('#youtubeUrl').oninput=()=>{if($('#youtubeUrl').value){$('#audioFile').value='';$('#fileLabel').textContent='Choose an audio or video file'}};
 $('#importForm').onsubmit=async e=>{
   e.preventDefault();
@@ -425,7 +477,13 @@ phraseRestoreDialog.onclose=guarded(async()=>{
     if(await loadLesson(id,{at,updated}))toast(kind==='split'?'Previous phrase set restored.':'Previous phrase version restored.');
   }finally{setBusy(false)}
 });
-document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT','BUTTON','SUMMARY'].includes(document.activeElement.tagName)||document.querySelector('dialog[open]')||busy||recording||starting||stopping||takeDraft)return;if(e.code==='Space'){e.preventDefault();guarded(togglePlay)()}if(e.code==='ArrowRight')selectPhrase(index+1);if(e.code==='ArrowLeft')selectPhrase(index-1)});window.addEventListener('resize',()=>{if(lesson)paintWave()});window.addEventListener('beforeunload',e=>{if(recording||starting||stopping||busy){e.preventDefault();e.returnValue=''}});
+document.addEventListener('keydown',e=>{
+  if(e.defaultPrevented||e.altKey||e.ctrlKey||e.metaKey||e.shiftKey||!lesson?.phrases[index]||$('#studioView').hidden||document.querySelector('dialog[open]')||busy||recording||starting||stopping||takeDraft)return;
+  if(![document.body,$('#mainContent'),$('#lessonTitle'),$('#phraseCounter'),$('#phraseListTitle')].includes(e.target))return;
+  if(e.code==='Space'){e.preventDefault();guarded(togglePlay)()}
+  if(e.code==='ArrowRight'||e.code==='ArrowLeft'){e.preventDefault();selectPhrase(index+(e.code==='ArrowRight'?1:-1))}
+});
+window.addEventListener('resize',()=>{if(lesson)paintWave()});window.addEventListener('beforeunload',e=>{if(recording||starting||stopping||busy){e.preventDefault();e.returnValue=''}});
 guarded(async()=>{if(pendingImport&&await recoverImport())return;const list=await refreshLibrary(),last=readPreference(lastLessonKey);if(busy||lesson||last===null)return;if(list.some(x=>x.id===last))await loadLesson(last);else clearMissingLesson(last)})();
 
 function openTakeHistory(){
@@ -438,11 +496,11 @@ function openTakeHistory(){
     const p=result.phraseRevision, date=result.created==null?'Date unavailable':new Date(result.created*1000).toLocaleString();
     const label=p?.id===current?'Current phrase':active.has(p?.id)?'Another phrase':'Earlier phrase version';
     const speed=result.playbackSpeed==null?'Speed unavailable':`${result.playbackSpeed}× speed`;
-    return `<li><div class="take-history-heading"><strong>${esc(date)}${result.legacy?' · Legacy take':''}</strong><button class="button quiet" data-history-index="${i}">Replay</button></div>${p?`<p class="history-phrase">${esc(p.text)}</p><p>${label} · ${fmt(p.start)} – ${fmt(p.end)}</p>`:''}<p>${esc(speed)} · Word accuracy ${esc(result.accuracy)}% · Pace &amp; rhythm ${esc(result.rhythm)}% · Intonation ${result.intonation==null?'N/A':esc(result.intonation)+'%'}</p>${result.tips?.length?`<details><summary>Feedback</summary><ul>${result.tips.map(t=>'<li>'+esc(t)+'</li>').join('')}</ul></details>`:''}</li>`;
+    return `<li><div class="take-history-heading"><strong>${esc(date)}${result.legacy?' · Legacy take':''}</strong><button class="button quiet" data-history-index="${i}" aria-label="Replay take ${i+1}, ${esc(date)}">Replay</button></div>${p?`<p class="history-phrase">${esc(p.text)}</p><p>${label} · ${fmt(p.start)} – ${fmt(p.end)}</p>`:''}<p>${esc(speed)} · Word accuracy ${esc(result.accuracy)}% · Pace &amp; rhythm ${esc(result.rhythm)}% · Intonation ${result.intonation==null?'N/A':esc(result.intonation)+'%'}</p>${result.tips?.length?`<details><summary>Feedback</summary><ul>${result.tips.map(t=>'<li>'+esc(t)+'</li>').join('')}</ul></details>`:''}</li>`;
   }).join('');
   $$('#takeHistoryList [data-history-index]').forEach(b=>b.onclick=async()=>{
     const result=history[+b.dataset.historyIndex];
-    historyAudio.hidden=false;historyAudio.src=result.audio;
+    historyAudio.hidden=false;historyAudio.src=result.audio;historyAudio.setAttribute('aria-label',b.getAttribute('aria-label').replace(/^Replay take/,'Take'));
     $('#takeHistoryStatus').textContent='';historyAudio.focus();
     try{await historyAudio.play()}catch(error){if(error.name!=='AbortError'&&historyDialog.open)$('#takeHistoryStatus').textContent='Audio for this take is unavailable.'}
   });
