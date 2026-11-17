@@ -73,6 +73,8 @@ enum PracticeDefaults {
     @Published var showEdit = false
     @Published var showDelete = false
     @Published var showResplit = false
+    @Published var showUndoPhraseEdit = false
+    @Published var showRestorePhraseSplit = false
     @Published var showFeedback = false
     @Published var importUpload = false
     @Published var importLanguage = "en"
@@ -190,12 +192,12 @@ enum PracticeDefaults {
         }
     }
 
-    private func loadLesson(_ id: String, at requestedIndex: Int? = nil) async throws {
+    private func loadLesson(_ id: String, at requestedIndex: Int? = nil, updated: Lesson? = nil) async throws {
         stopPlayback()
         let l: Lesson
         let player: AVAudioPlayer?
         do {
-            l = try await api.get(Lesson.self, "/api/lesson/" + id)
+            if let updated { l = updated } else { l = try await api.get(Lesson.self, "/api/lesson/" + id) }
             if l.phrases.isEmpty {
                 player = nil
             } else {
@@ -668,30 +670,51 @@ enum PracticeDefaults {
         return try await api.get(JobStart.self, file.pathExtension.lowercased() == "pdf" ? "/api/pdf" : "/api/upload", method: "POST", contentType: "multipart/form-data; boundary=\(boundary)", file: temp)
     }
 
-    func savePhrase(text: String, start: Double, end: Double) async -> String? {
-        guard let l = lesson, let phrase else { return nil }
+    func savePhrase(text: String, start: Double, end: Double, base: Lesson?, at ix: Int) async -> String? {
+        guard !locked, let base, lesson?.id == base.id, index == ix else {
+            return "The session changed. Reopen the editor and try again."
+        }
+        guard base.phrases.indices.contains(ix), let version = base.phraseVersion, let revision = base.phrases[ix].revision else {
+            return "Restart Shadow Studio with the current engine to edit phrases."
+        }
+        navigating = true
+        defer { navigating = false }
         do {
-            var body: [String: Any] = ["text": text, "start": start, "end": end]
-            if let revision = phrase.revision { body["revision"] = revision }
-            lesson = try await api.get(Lesson.self, "/api/phrase/\(l.id)/\(index)", method: "PATCH", json: body)
+            let body: [String: Any] = ["text": text, "start": start, "end": end, "revision": revision, "version": version]
+            lesson = try await api.get(Lesson.self, "/api/phrase/\(base.id)/\(ix)", method: "PATCH", json: body)
             savePosition()
             phraseChanged()
+            try? await refreshLibrary()
             show("Phrase saved.")
             return nil
         } catch { return error.localizedDescription }
     }
 
     func resplitLesson() async {
-        guard let l = lesson else { return }
+        guard !locked, let l = lesson else { return }
+        guard let version = l.phraseVersion else { show("Restart Shadow Studio with the current engine to re-split phrases."); return }
         await guarded {
             defer { busy = nil }
             stopPlayback()
             busy = Busy(title: "Finding new phrases", message: "Preparing audio…")
-            let j = try await api.get(JobStart.self, "/api/resplit/" + l.id, method: "POST")
+            let j = try await api.get(JobStart.self, "/api/resplit/\(l.id)?version=\(version)", method: "POST")
             _ = try await waitJob(j.jobId, "Finding new phrases")
             UserDefaults.standard.removeObject(forKey: phraseKey(l.id))
             try await loadLesson(l.id, at: 0)
             show("New phrases are ready. Start again from the first phrase.")
+        }
+    }
+
+    func restorePhrases(split: Bool) async {
+        guard !locked, let l = lesson, let version = l.phraseVersion else { return }
+        await guarded {
+            defer { busy = nil }
+            stopPlayback()
+            busy = Busy(title: "Restoring phrases", message: "Updating your session…")
+            let kind = split ? "split" : "edit"
+            let updated = try await api.get(Lesson.self, "/api/phrase-restore/\(l.id)/\(kind)?version=\(version)", method: "POST")
+            try await loadLesson(l.id, at: split ? 0 : l.phraseEditIndex, updated: updated)
+            show(split ? "Previous phrase set restored." : "Previous phrase version restored.")
         }
     }
 

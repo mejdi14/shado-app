@@ -319,7 +319,17 @@ struct StudioHost: View {
         .alert("Re-split this session?", isPresented: $store.showResplit) {
             Button("Keep phrases", role: .cancel) {}
             Button("Re-split phrases") { Task { await store.resplitLesson() } }
-        } message: { Text("The audio is transcribed again and replaces the current phrases and edits. Practice starts at phrase one. Earlier recordings and feedback stay in Take history.") }
+        } message: { Text("The audio is transcribed again. The new phrases start fresh at phrase one. You can restore the current phrases, edits, and progress. Each re-split replaces the previous restore point. Earlier takes stay in Take history.") }
+        .alert("Restore the previous phrase version?", isPresented: $store.showUndoPhraseEdit) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restore version") { Task { await store.restorePhrases(split: false) } }
+        } message: {
+            Text("Switch phrase \((store.lesson?.phraseEditIndex ?? 0) + 1) to its previous text, timing, and progress. You can switch back to this version. All takes stay in Take history.")
+        }
+        .alert("Restore the previous phrase set?", isPresented: $store.showRestorePhraseSplit) {
+            Button("Cancel", role: .cancel) {}
+            Button("Restore set") { Task { await store.restorePhrases(split: true) } }
+        } message: { Text("Switch to the previous phrases, edits, and progress and start at phrase one. You can switch back to this set. All takes stay in Take history.") }
         .task { await store.start() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
             if store.recording { store.interruptRecording() }

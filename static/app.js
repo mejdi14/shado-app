@@ -54,7 +54,7 @@ function clearMissingLesson(id){
   forgetLesson(id);
   if(lesson?.id===id){
     stopPlayback();lesson=null;index=0;original.removeAttribute('src');take.removeAttribute('src');
-    for(const selector of ['#practiceArea','#phraseSection','#lessonMenu','#resplitLesson','#noPhrases','#continueLesson'])$(selector).hidden=true;
+    for(const selector of ['#practiceArea','#phraseSection','#lessonMenu','#resplitLesson','#noPhrases','#continueLesson','#phraseRestoreActions'])$(selector).hidden=true;
     $('#emptyState').hidden=$('#howItWorks').hidden=false;
     $('#lessonLanguage').innerHTML='<span>EN</span> English practice';
     $('#lessonTitle').textContent='Your next voice starts here';
@@ -132,10 +132,10 @@ for(const selector of ['#libraryLanguage','#libraryProgress','#librarySort'])$(s
 $('#resetLibrary').onclick=()=>{$('#libraryControls').reset();renderLibrary();$('#librarySearch').focus()};
 $('#librarySample').onclick=guarded(async()=>{if(sampleId&&await loadLesson(sampleId))showView('studio')});
 function showView(view){if(recording||starting||stopping||busy||takeDraft)return;stopPlayback();$('#libraryView').hidden=view!=='library';$('#studioView').hidden=view==='library';$('#libraryNav').classList.toggle('active',view==='library');$('#practiceNav').classList.toggle('active',view!=='library');$('#pageLabel').textContent=view==='library'?'Your library':'Practice studio'}
-async function loadLesson(id,restart=false){
+async function loadLesson(id,{at=null,updated=null}={}){
   stopPlayback();
   let next;
-  try{next=await api('/api/lesson/'+id)}
+  try{next=updated??await api('/api/lesson/'+id)}
   catch(error){
     if(error.status!==404)throw error;
     clearMissingLesson(id);
@@ -143,10 +143,10 @@ async function loadLesson(id,restart=false){
     return false;
   }
   const currentIdentity=lesson?.id===id?phraseIdentity(lesson.phrases[index]):null;
-  const saved=restart?null:currentIdentity?JSON.stringify({index,identity:currentIdentity}):readPreference(phraseKey(id));
+  const saved=at!==null?null:currentIdentity?JSON.stringify({index,identity:currentIdentity}):readPreference(phraseKey(id));
   const restored=savedPhraseIndex(next.phrases,saved);
   lesson=next;
-  index=Math.max(restored,0);
+  index=at??Math.max(restored,0);
   const hasPhrases=lesson.phrases.length>0;
   writePreference(lastLessonKey,id);
   if(hasPhrases)original.src='/api/audio/'+id;else original.removeAttribute('src');
@@ -156,6 +156,7 @@ async function loadLesson(id,restart=false){
   $('#practiceArea').hidden=$('#phraseSection').hidden=!hasPhrases;
   $('#lessonMenu').hidden=false;
   $('#resplitLesson').hidden=!!lesson.sample;
+  renderPhraseRestoreActions();
   $('#lessonTitle').textContent=lesson.title;$('#lessonMeta').textContent=`${lesson.phrases.length} phrases · ${fmt(lesson.duration)} · ${lesson.sample?'Built-in Mac voice / workflow sample':lesson.source.startsWith('http')?'Imported from YouTube':'Imported from your file'}`;$('#sourceBadge').textContent=lesson.sample?'GUIDED SAMPLE':lesson.source.startsWith('http')?'YOUTUBE':'YOUR AUDIO';
   rememberPhrase();
   if(hasPhrases)renderPhrase();else renderFeedback(null);
@@ -163,6 +164,11 @@ async function loadLesson(id,restart=false){
   if(lesson!==next)return false;
   if(hasPhrases&&saved!==null&&restored<0)toast('The saved phrase could not be found. This session starts at phrase one.');
   return true;
+}
+function renderPhraseRestoreActions(){
+  $('#undoPhraseEdit').hidden=!lesson.canUndoPhraseEdit;
+  $('#restorePhraseSplit').hidden=!lesson.canRestorePhraseSplit;
+  $('#phraseRestoreActions').hidden=!lesson.canUndoPhraseEdit&&!lesson.canRestorePhraseSplit;
 }
 function stopPlayback(){clearInterval(playbackTimer);playbackTimer=null;playbackDone=null;original.pause();take.pause();abMode=false;$('#playOriginal span').textContent='▶'}
 function renderPhrase(){stopPlayback();const p=lesson.phrases[index];$('#phraseText').textContent=p.text;$('#phraseCounter').textContent=`PHRASE ${String(index+1).padStart(2,'0')} / ${String(lesson.phrases.length).padStart(2,'0')}`;$('#phraseTime').textContent=`${fmt(p.start)} — ${fmt(p.end)}`;$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1;$('#phraseTotal').textContent=lesson.phrases.length;$('#completion').textContent=`${lesson.phrases.filter(p=>p.practised).length} / ${lesson.phrases.length} practised`;$('#phraseList').innerHTML=lesson.phrases.map((p,i)=>`<button class="phrase-item ${i===index?'active':''}" data-index="${i}" aria-current="${i===index?'true':'false'}"><span class="phrase-number">${String(i+1).padStart(2,'0')}</span><span class="phrase-item-text">${esc(p.text)}</span><span class="phrase-duration">${(p.end-p.start).toFixed(1)}s</span><span class="phrase-check">${p.practised?'✓':'○'}</span></button>`).join('');$$('[data-index]').forEach(b=>b.onclick=()=>selectPhrase(+b.dataset.index));$('#listenCue').hidden=$('#micCue').hidden=!!p.latest;$('#replayCue').hidden=$('#takeRow').hidden=!p.latest;if(p.latest){take.src=p.latest.audio;$('#takeCount').textContent=`${p.takes||1} take${p.takes>1?'s':''}`}setMode(mode);renderFeedback(p.latest);drawWave();}
@@ -241,7 +247,7 @@ async function startRecording(){
 }
 function protectRecording(event){event.preventDefault();event.returnValue='There is an unsaved take.'}
 function releaseMic(){micStream?.getTracks().forEach(t=>t.stop());micStream=null}
-function setControlsLocked(lock){$$('.mode,.chip,#speed,#prevPhrase,#nextPhrase,#editPhrase,#lessonMenu,#resplitLesson,.phrase-item,#newTop,#libraryNav,#practiceNav,#playTake,#compareAB,#openTakeHistory').forEach(b=>b.disabled=lock);if(!lock&&lesson){$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1}}
+function setControlsLocked(lock){$$('.mode,.chip,#speed,#prevPhrase,#nextPhrase,#editPhrase,#lessonMenu,#resplitLesson,#undoPhraseEdit,#restorePhraseSplit,.phrase-item,#newTop,#libraryNav,#practiceNav,#playTake,#compareAB,#openTakeHistory').forEach(b=>b.disabled=lock);if(!lock&&lesson){$('#prevPhrase').disabled=index===0;$('#nextPhrase').disabled=index===lesson.phrases.length-1}}
 function resetRecording(){
   recording=false;stopping=false;starting=false;stopPlayback();stopLive();live=null;
   clearInterval(recordTimer);clearTimeout(autoStop);releaseMic();recorder=null;chunks=[];
@@ -313,7 +319,7 @@ async function recoverImport(){
   try{
     const lid=await waitJob(id,'Importing your practice session',true);
     $('#jobMessage').textContent='Opening your saved session…';
-    const loaded=await loadLesson(lid,true);
+    const loaded=await loadLesson(lid,{at:0});
     saveImportJob(null);
     if(!loaded)throw new Error('The import finished, but the session is no longer in your library.');
   }catch(error){
@@ -353,11 +359,72 @@ $('#importForm').onsubmit=async e=>{
   }
   await recoverImport();
 };
-$('#editPhrase').onclick=()=>{if(!lesson)return;stopPlayback();const p=lesson.phrases[index];$('#editText').value=p.text;$('#editStart').value=p.start;$('#editEnd').value=p.end;$('#editError').textContent='';$('#editDialog').showModal()};$('#editForm').onsubmit=async e=>{e.preventDefault();try{lesson=await api(`/api/phrase/${lesson.id}/${index}`,json('PATCH',{text:$('#editText').value,start:+$('#editStart').value,end:+$('#editEnd').value,revision:lesson.phrases[index]?.revision}));$('#editDialog').close();rememberPhrase();renderPhrase();toast('Phrase saved.')}catch(err){$('#editError').textContent=err.message}};
+const editDialog=$('#editDialog'), editForm=$('#editForm');
+let editTarget=null, savingEdit=false;
+$('#editPhrase').onclick=()=>{
+  if(!lesson||busy)return;
+  stopPlayback();
+  const p=lesson.phrases[index];
+  editTarget={id:lesson.id,index,version:lesson.phraseVersion,revision:p.revision};
+  $('#editText').value=p.text;$('#editStart').value=p.start;$('#editEnd').value=p.end;
+  $('#editError').textContent='';editDialog.showModal();
+};
+editDialog.oncancel=e=>{if(savingEdit)e.preventDefault()};
+editForm.onsubmit=async e=>{
+  e.preventDefault();
+  if(savingEdit||!editTarget)return;
+  const {id,index:ix,version,revision}=editTarget;
+  const body={version,revision,text:$('#editText').value,start:+$('#editStart').value,end:+$('#editEnd').value};
+  savingEdit=true;
+  editForm.querySelectorAll('button').forEach(b=>b.disabled=true);
+  try{
+    lesson=await api(`/api/phrase/${id}/${ix}`,json('PATCH',body));
+    editDialog.close();rememberPhrase();renderPhrase();renderPhraseRestoreActions();toast('Phrase saved.');
+  }catch(err){$('#editError').textContent=err.message}
+  finally{savingEdit=false;editForm.querySelectorAll('button').forEach(b=>b.disabled=false)}
+};
 $('#lessonMenu').onclick=()=>{stopPlayback();$('#deleteDialog').showModal()};$('#confirmDelete').onclick=guarded(async()=>{const old=lesson.id;try{await api('/api/lesson/'+old,{method:'DELETE'})}
 catch(error){if(error.status!==404)throw error;$('#deleteDialog').close();clearMissingLesson(old);await refreshLibrary();return}
 $('#deleteDialog').close();forgetLesson(old);location.reload()});
-$('#resplitLesson').onclick=()=>{if(!lesson||busy)return;stopPlayback();$('#resplitDialog').showModal()};$('#cancelResplit').onclick=()=>$('#resplitDialog').close();$('#confirmResplit').onclick=guarded(async()=>{const lid=lesson.id;$('#resplitDialog').close();setBusy(true,'Finding new phrases');const j=await api('/api/resplit/'+lid,{method:'POST'}).catch(e=>{setBusy(false);throw e});await waitJob(j.jobId,'Finding new phrases');writePreference(phraseKey(lid),null);if(await loadLesson(lid,true))toast('New phrases are ready. Start again from the first phrase.')});
+$('#resplitLesson').onclick=()=>{if(!lesson||busy)return;stopPlayback();$('#resplitDialog').showModal()};
+$('#cancelResplit').onclick=()=>$('#resplitDialog').close();
+$('#confirmResplit').onclick=guarded(async()=>{
+  const {id,phraseVersion}=lesson;
+  $('#resplitDialog').close();
+  const title='Finding new phrases';
+  setBusy(true,title);
+  try{
+    const j=await api(`/api/resplit/${id}?version=${phraseVersion}`,{method:'POST'});
+    await waitJob(j.jobId,title);
+    setBusy(true,title,'Refreshing the session…');
+    if(await loadLesson(id,{at:0}))toast('New phrases are ready. Start again from the first phrase.');
+  }finally{setBusy(false)}
+});
+const phraseRestoreDialog=$('#phraseRestoreDialog');
+let phraseRestore=null;
+function confirmPhraseRestore(kind){
+  if(!lesson||busy)return;
+  stopPlayback();
+  const split=kind==='split';
+  phraseRestore={kind,id:lesson.id,version:lesson.phraseVersion,at:split?0:lesson.phraseEditIndex};
+  $('#phraseRestoreTitle').textContent=split?'Restore the previous phrase set?':'Restore the previous phrase version?';
+  $('#phraseRestoreMessage').textContent=split
+    ? 'Switch to the previous phrases, edits, and progress and start at phrase one. You can switch back to this set. All takes stay in Take history.'
+    : `Switch phrase ${lesson.phraseEditIndex+1} to its previous text, timing, and progress. You can switch back to this version. All takes stay in Take history.`;
+  phraseRestoreDialog.returnValue='';
+  phraseRestoreDialog.showModal();
+}
+$('#undoPhraseEdit').onclick=()=>confirmPhraseRestore('edit');
+$('#restorePhraseSplit').onclick=()=>confirmPhraseRestore('split');
+phraseRestoreDialog.onclose=guarded(async()=>{
+  if(phraseRestoreDialog.returnValue!=='restore'||!phraseRestore)return;
+  const {kind,id,version,at}=phraseRestore;
+  setBusy(true,'Restoring phrases','Updating your session…');
+  try{
+    const updated=await api(`/api/phrase-restore/${id}/${kind}?version=${version}`,{method:'POST'});
+    if(await loadLesson(id,{at,updated}))toast(kind==='split'?'Previous phrase set restored.':'Previous phrase version restored.');
+  }finally{setBusy(false)}
+});
 document.addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT','BUTTON','SUMMARY'].includes(document.activeElement.tagName)||document.querySelector('dialog[open]')||busy||recording||starting||stopping||takeDraft)return;if(e.code==='Space'){e.preventDefault();guarded(togglePlay)()}if(e.code==='ArrowRight')selectPhrase(index+1);if(e.code==='ArrowLeft')selectPhrase(index-1)});window.addEventListener('resize',()=>{if(lesson)paintWave()});window.addEventListener('beforeunload',e=>{if(recording||starting||stopping||busy){e.preventDefault();e.returnValue=''}});
 guarded(async()=>{if(pendingImport&&await recoverImport())return;const list=await refreshLibrary(),last=readPreference(lastLessonKey);if(busy||lesson||last===null)return;if(list.some(x=>x.id===last))await loadLesson(last);else clearMissingLesson(last)})();
 

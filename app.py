@@ -30,6 +30,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 executor = ThreadPoolExecutor(max_workers=1)
 jobs = {}
 record_jobs = {}
+phrase_versions = {}
 models = {}
 LANGUAGES = {'en': 'English', 'fr': 'French'}
 model_lock = threading.Lock()
@@ -102,16 +103,55 @@ def legacy_take(lesson, index):
 def archive_phrase(lesson, index):
     revision=phrase_revision(lesson,index)
     lesson.setdefault('archivedRevisions',{})[revision['id']]=revision
+    saved=lesson['phrases'][index] | {'revision':revision['id']}
     if old:=legacy_take(lesson,index):
         lesson.setdefault('takeHistory',[]).append(old)
+        saved['latest']=old
+    return saved
+
+def phrase_version(lesson):
+    lid=lesson['id']
+    if lid not in phrase_versions: phrase_versions[lid]=uuid.uuid4().hex
+    return phrase_versions[lid]
+
+def require_phrase_version(lesson, version):
+    if version is None:
+        raise HTTPException(409,'Reopen this session in the current version of Shadow Studio before changing phrases.')
+    if version!=phrase_version(lesson):
+        raise HTTPException(409,'The phrases changed. Reopen the session and try again.')
+
+def save_phrase_change(lesson):
+    version=uuid.uuid4().hex
+    save_lesson(lesson)
+    phrase_versions[lesson['id']]=version
+
+def archive_phrase_set(lesson):
+    saved={'phrases':[archive_phrase(lesson,i) for i in range(len(lesson['phrases']))]}
+    if edit:=lesson.pop('phraseEditUndo',None): saved['edit']=edit
+    return saved
+
+def retained_phrase(lesson, index, revision):
+    if 0<=index<len(lesson['phrases']) and phrase_revision(lesson,index)['id']==revision:
+        return lesson['phrases'][index]
+    split=lesson.get('phraseSplitUndo',{})
+    phrases=split.get('phrases',[])
+    if 0<=index<len(phrases) and phrases[index].get('revision')==revision:
+        return phrases[index]
+    for edit in (lesson.get('phraseEditUndo'),split.get('edit')):
+        if edit and edit['index']==index and edit['phrase']['revision']==revision:
+            return edit['phrase']
 
 def lesson_history(lesson):
     return lesson.get('takeHistory',[])+[old for i in range(len(lesson['phrases'])) if (old:=legacy_take(lesson,i))]
 
 def public_lesson(lesson):
-    return {k:v for k,v in lesson.items() if k!='archivedRevisions'} | {
+    edit=lesson.get('phraseEditUndo')
+    return {k:v for k,v in lesson.items() if k not in ('archivedRevisions','phraseEditUndo','phraseSplitUndo')} | {
         'phrases':[p | {'revision':phrase_revision(lesson,i)['id']} for i,p in enumerate(lesson['phrases'])],
         'takeHistory':sorted(lesson_history(lesson),key=lambda r:r.get('created') or 0,reverse=True),
+        'phraseVersion':phrase_version(lesson), 'canUndoPhraseEdit':bool(edit),
+        'phraseEditIndex':edit['index'] if edit else None,
+        'canRestorePhraseSplit':bool(lesson.get('phraseSplitUndo')),
     }
 
 def run(cmd, timeout=180):
@@ -431,18 +471,15 @@ def backup_take(value, lid, duration):
         check_backup(all(backup_number(n, -120, 120) for n in backup_list(curves.get(key), 1000)))
     check_backup(all(backup_text(s, 5000) for s in backup_list(value.get('tips'), 100)))
 
-def backup_lesson(value, lid):
-    backup_object(value, 'id title source created duration phrases sample language archivedRevisions takeHistory')
-    duration = value.get('duration')
-    check_backup(value.get('id') == lid and backup_text(value.get('title'), 160)
-        and backup_text(value.get('source'), 1024) and backup_number(value.get('created'), 0, 253402300799)
-        and backup_number(duration, 0, 1800) and type(value.get('sample')) is bool
-        and value.get('language', 'en') in ('en', 'fr'))
-    linked = set()
-    for phrase in backup_list(value.get('phrases'), 25_000):
+def backup_phrases(phrases, lid, duration, linked, archived=None):
+    for phrase in backup_list(phrases, 25_000):
         backup_object(phrase, 'start end text words practised latest takes revision')
         backup_phrase_times(phrase, duration)
-        check_backup(phrase.get('revision') is None or backup_id(phrase['revision']))
+        revision=phrase.get('revision')
+        check_backup(revision is None or backup_id(revision))
+        if archived is not None:
+            check_backup(backup_id(revision) and archived.get(revision) ==
+                {k:phrase[k] for k in ('start','end','text')} | {'id':revision})
         check_backup(phrase.get('practised') is None or type(phrase['practised']) is bool)
         takes = phrase.get('takes')
         check_backup(takes is None or (type(takes) is int and 0 <= takes <= 2**31-1))
@@ -454,12 +491,40 @@ def backup_lesson(value, lid):
                     and backup_number(word.get('end'), 0, duration + 1))
         if phrase.get('latest') is not None:
             backup_take(phrase['latest'], lid, duration)
+            if archived is not None:
+                check_backup(phrase['latest'].get('phraseRevision') == archived[revision])
             linked.add(phrase['latest']['id'] + '.wav')
+
+def backup_phrase_edit(edit, count, lid, duration, linked, archived):
+    backup_object(edit, 'index phrase')
+    index=edit.get('index')
+    check_backup(type(index) is int and 0<=index<count)
+    backup_phrases([edit.get('phrase')], lid, duration, linked, archived)
+
+def backup_lesson(value, lid):
+    backup_object(value, 'id title source created duration phrases sample language archivedRevisions takeHistory phraseEditUndo phraseSplitUndo')
+    duration = value.get('duration')
+    check_backup(value.get('id') == lid and backup_text(value.get('title'), 160)
+        and backup_text(value.get('source'), 1024) and backup_number(value.get('created'), 0, 253402300799)
+        and backup_number(duration, 0, 1800) and type(value.get('sample')) is bool
+        and value.get('language', 'en') in ('en', 'fr'))
+    linked = set()
+    phrases=value.get('phrases')
+    backup_phrases(phrases, lid, duration, linked)
     archived = value.get('archivedRevisions', {})
     check_backup(isinstance(archived, dict) and len(archived) <= BACKUP_FILES)
     for key, revision in archived.items():
         backup_revision(revision, duration)
         check_backup(revision['id'] == key)
+    if 'phraseEditUndo' in value:
+        backup_phrase_edit(value['phraseEditUndo'], len(phrases), lid, duration, linked, archived)
+    if 'phraseSplitUndo' in value:
+        split=value['phraseSplitUndo']
+        backup_object(split, 'phrases edit')
+        check_backup(not value['sample'])
+        backup_phrases(split.get('phrases'), lid, duration, linked, archived)
+        if 'edit' in split:
+            backup_phrase_edit(split['edit'], len(split['phrases']), lid, duration, linked, archived)
     for take in backup_list(value.get('takeHistory', []), BACKUP_FILES):
         backup_take(take, lid, duration)
         linked.add(take['id'] + '.wav')
@@ -762,7 +827,8 @@ async def backup_restore(request: Request):
         backup_lock.release()
 
 @app.get('/api/lesson/{lid}')
-def lesson(lid:str): return public_lesson(read_lesson(lid))
+def lesson(lid:str):
+    with file_lock: return public_lesson(read_lesson(lid))
 
 @app.get('/api/audio/{lid}')
 def audio(lid:str):
@@ -978,45 +1044,80 @@ async def pdf(file:UploadFile=File(...), title:str=Form(''), voice_id:str=Form('
     return job_start(action,'Waiting for the engine to start your import…')
 
 @app.post('/api/resplit/{lid}')
-def resplit(lid:str):
+def resplit(lid:str,version:str|None=None):
     def action(jid):
         path=folder(lid)
+        with file_lock:
+            try: lesson=read_lesson(lid)
+            except HTTPException as exc: raise ValueError('This session is no longer available.') from exc
+            if version!=phrase_version(lesson):
+                raise ValueError('The phrases changed before re-splitting started. Reopen the session and try again.')
         jobs[jid]['message']='Finding new phrases… Long sessions can take a few minutes.'
-        before=read_lesson(lid); language=before.get('language','en')
         phrases=make_phrases(transcribe(path/'audio.wav', language), load_audio(path/'audio.wav'))
         if not phrases: raise ValueError(f'No clear {LANGUAGES[language]} speech found, so the current phrases were kept.')
         with file_lock:
-            lesson=read_lesson(lid)
-            active=[phrase_revision(lesson,i)['id'] for i in range(len(lesson['phrases']))]
-            if active!=[phrase_revision(before,i)['id'] for i in range(len(before['phrases']))]:
-                raise ValueError('The phrases changed during re-splitting. Start re-splitting again to replace them.')
-            for i in range(len(lesson['phrases'])): archive_phrase(lesson,i)
+            try: lesson=read_lesson(lid)
+            except HTTPException as exc: raise ValueError('This session is no longer available.') from exc
+            if version!=phrase_version(lesson):
+                raise ValueError('The phrases changed during re-splitting. Reopen the session and try again.')
+            lesson['phraseSplitUndo']=archive_phrase_set(lesson)
             lesson['phrases']=[p | {'revision':uuid.uuid4().hex} for p in phrases]
-            save_lesson(lesson)
+            save_phrase_change(lesson)
         return lid
     with file_lock:
-        if read_lesson(lid).get('sample'): raise HTTPException(400,'The guided sample keeps its own phrases.')
+        lesson=read_lesson(lid)
+        if lesson.get('sample'): raise HTTPException(400,'The guided sample keeps its own phrases.')
+        require_phrase_version(lesson,version)
+        language=lesson.get('language','en')
         return job_start(action)
 
 @app.patch('/api/phrase/{lid}/{index}')
 async def edit(lid:str,index:int,request:Request):
-    body=await request.json()
-    try: start=float(body['start']); end=float(body['end']); text=str(body['text']).strip()
-    except (KeyError,ValueError,TypeError): raise HTTPException(400,'Enter text and valid start/end times.')
+    try:
+        body=await request.json()
+        start=float(body['start']); end=float(body['end'])
+        if not isinstance(body['text'],str): raise ValueError
+        text=body['text'].strip()
+        text.encode('utf-8')
+    except (KeyError,ValueError,TypeError,OverflowError): raise HTTPException(400,'Enter text and valid start/end times.')
     with file_lock:
         lesson=read_lesson(lid)
+        require_phrase_version(lesson,body.get('version'))
         if not 0<=index<len(lesson['phrases']): raise HTTPException(404,'Phrase not found')
         previous=phrase_revision(lesson,index)
-        if body.get('revision') is not None and body['revision']!=previous['id']:
+        if body.get('revision')!=previous['id']:
             raise HTTPException(409,'This phrase has changed. Reopen the session before editing it.')
-        if not text or len(text)>1000 or not (math.isfinite(start) and math.isfinite(end) and 0<=start<end<=lesson['duration']+.2 and end-start<=30): raise HTTPException(400,'Choose a phrase between 0 and 30 seconds within the audio.')
+        if not text or len(text)>1000 or '\0' in text: raise HTTPException(400,'Enter phrase text up to 1,000 characters.')
+        if not (math.isfinite(start) and math.isfinite(end) and 0<=start<end<=lesson['duration']+.2 and end-start<=30): raise HTTPException(400,'Choose a phrase between 0 and 30 seconds within the audio.')
         if (start,end,text)!=(previous['start'],previous['end'],previous['text']):
-            archive_phrase(lesson,index)
-            phrase=lesson['phrases'][index]
-            phrase.update(start=start,end=end,text=text,words=[],practised=False,revision=uuid.uuid4().hex)
-            phrase.pop('latest',None)
-            save_lesson(lesson)
-    return public_lesson(lesson)
+            lesson['phraseEditUndo']={'index':index,'phrase':archive_phrase(lesson,index)}
+            lesson['phrases'][index]={'start':start,'end':end,'text':text,'words':[],
+                'practised':False,'revision':uuid.uuid4().hex}
+            save_phrase_change(lesson)
+        return public_lesson(lesson)
+
+@app.post('/api/phrase-restore/{lid}/{kind}')
+def restore_phrases(lid:str,kind:str,version:str|None=None):
+    with file_lock:
+        lesson=read_lesson(lid)
+        require_phrase_version(lesson,version)
+        if kind=='edit':
+            if not (edit:=lesson.get('phraseEditUndo')):
+                raise HTTPException(409,'There is no previous phrase edit to restore.')
+            index=edit['index']
+            lesson['phraseEditUndo']={'index':index,'phrase':archive_phrase(lesson,index)}
+            lesson['phrases'][index]=edit['phrase']
+        elif kind=='split':
+            if lesson.get('sample'): raise HTTPException(400,'The guided sample keeps its own phrases.')
+            if not (split:=lesson.get('phraseSplitUndo')):
+                raise HTTPException(409,'There is no previous phrase set to restore.')
+            lesson['phraseSplitUndo']=archive_phrase_set(lesson)
+            lesson['phrases']=split['phrases']
+            if 'edit' in split: lesson['phraseEditUndo']=split['edit']
+        else:
+            raise HTTPException(404,'Phrase restore option not found.')
+        save_phrase_change(lesson)
+        return public_lesson(lesson)
 
 def words(text): return re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)*", unicodedata.normalize('NFC',text).lower().replace('’',"'"))
 
@@ -1135,10 +1236,13 @@ async def queue_recording(lid,index,request,speed,revision,take_id=None):
             with file_lock:
                 current=read_lesson(lid)
                 history=current.setdefault('takeHistory',[])
-                if 0<=index<len(current['phrases']) and phrase_revision(current,index)['id']==phrase['id']:
-                    p=current['phrases'][index]
-                    if old:=legacy_take(current,index): history.append(old)
-                    p['practised']=True; p['latest']=result; p['takes']=(p.get('takes') or 0)+1
+                if (p:=retained_phrase(current,index,phrase['id'])) is not None:
+                    latest=p.get('latest')
+                    if latest and not latest.get('phraseRevision'):
+                        latest=latest | {'phraseRevision':phrase,'legacy':True}
+                        history.append(latest)
+                    p['latest']=latest if latest and (latest.get('created') or 0)>created else result
+                    p['practised']=True; p['takes']=(p.get('takes') or int(bool(latest)))+1
                 history.append(result)
                 try: os.link(pending,wav)
                 except FileExistsError: raise ValueError('This take ID is already used by another audio file.')
@@ -1158,6 +1262,8 @@ async def queue_recording(lid,index,request,speed,revision,take_id=None):
         lesson=read_lesson(lid)
         if existing:=existing_recording(lesson,tid,fingerprint):
             return existing
+        if revision is None and ('phraseEditUndo' in lesson or 'phraseSplitUndo' in lesson):
+            raise HTTPException(409,'Reopen the session before recording against its changed phrases.')
         if os.path.lexists(wav) or any((p.get('latest') or {}).get('id')==tid for p in lesson['phrases']):
             raise HTTPException(409,'This take ID is already used by another recording or audio file.')
         phrase=phrase_revision(lesson,index) if 0<=index<len(lesson['phrases']) else None
@@ -1219,7 +1325,10 @@ def take_audio(lid:str,tid:str):
 @app.delete('/api/lesson/{lid}')
 def delete(lid:str):
     with file_lock:
-        read_lesson(lid); shutil.rmtree(folder(lid)); return {'ok':True}
+        read_lesson(lid)
+        shutil.rmtree(folder(lid))
+        phrase_versions.pop(lid,None)
+        return {'ok':True}
 
 @app.get('/api/status')
 def status(): return JSONResponse({'local':True,'modelReady':bool(models),'ffmpeg':bool(shutil.which('ffmpeg') or Path('/opt/homebrew/bin/ffmpeg').exists()),'elevenLabsCLI':os.access(eleven_cli(),os.X_OK)},headers={'X-Shadow-Engine':ENGINE_SIGNATURE})

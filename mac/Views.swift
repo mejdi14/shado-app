@@ -446,6 +446,9 @@ struct StudioView: View {
                     if l.sample != true {
                         Button("Re-split phrases…") { s.showResplit = true }.buttonStyle(PillStyle())
                     }
+                    if l.canRestorePhraseSplit == true {
+                        Button("Restore previous phrase set…") { s.showRestorePhraseSplit = true }.buttonStyle(PillStyle())
+                    }
                     Button("Delete session…", role: .destructive) { s.showDelete = true }.buttonStyle(PillStyle())
                 }.disabled(s.locked)
             }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -512,7 +515,13 @@ struct PracticePanel: View {
                     .accessibilityLabel(showInspector ? "Hide phrases and feedback" : "Show phrases and feedback")
                 Menu {
                     Button("Edit this phrase…") { s.stopPlayback(); s.showEdit = true }
+                    if lesson.canUndoPhraseEdit == true {
+                        Button("Restore previous phrase version…") { s.stopPlayback(); s.showUndoPhraseEdit = true }
+                    }
                     if lesson.sample != true { Button("Re-split phrases…") { s.stopPlayback(); s.showResplit = true } }
+                    if lesson.canRestorePhraseSplit == true {
+                        Button("Restore previous phrase set…") { s.stopPlayback(); s.showRestorePhraseSplit = true }
+                    }
                     Divider()
                     Button("Delete session…", role: .destructive) { s.stopPlayback(); s.showDelete = true }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(s.locked).help("More")
@@ -1148,25 +1157,41 @@ struct EditSheet: View {
     @State var start = 0.0
     @State var end = 0.0
     @State var error = ""
+    @State private var base: Lesson?
+    @State private var index = 0
+    @State private var saving = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Edit phrase").font(.system(size: 20, weight: .semibold)).tracking(-0.3)
-                muted("Changing the text or timing starts a new phrase version. Earlier recordings and feedback stay in Take history.")
+                muted("Editing starts a new version with fresh progress. You can restore the previous version from the session menu. Earlier takes stay in Take history.")
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Text").font(.system(size: 12, weight: .medium))
                 TextEditor(text: $text).font(.system(size: 13)).scrollContentBackground(.hidden).padding(8).frame(height: 96).panel(10)
             }
             HStack(spacing: 12) { field("Start (seconds)", $start); field("End (seconds)", $end) }
-            muted("Keep phrases under 30 seconds. Correct the text before comparing takes.")
+            muted("Keep phrases at 30 seconds or less. Correct the text before comparing takes.")
             if !error.isEmpty { Text(error).foregroundStyle(Color.rec).font(.system(size: 12.5)) }
-            HStack { Spacer(); Button("Cancel") { s.showEdit = false }.buttonStyle(PillStyle()).keyboardShortcut(.cancelAction); Button("Save phrase") { Task { if let e = await s.savePhrase(text: text, start: start, end: end) { error = e } else { s.showEdit = false } } }.buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction) }
+            HStack {
+                Spacer()
+                Button("Cancel") { s.showEdit = false }.buttonStyle(PillStyle()).keyboardShortcut(.cancelAction)
+                Button("Save phrase") {
+                    saving = true
+                    Task {
+                        error = await s.savePhrase(text: text, start: start, end: end, base: base, at: index) ?? ""
+                        saving = false
+                        if error.isEmpty { s.showEdit = false }
+                    }
+                }.buttonStyle(PillStyle(primary: true)).keyboardShortcut(.defaultAction)
+            }.disabled(saving)
         }
         .padding(24).frame(width: 480).background(Color.surface)
-        .onAppear { if let p = s.phrase { text = p.text; start = p.start; end = p.end } }
+        .onAppear {
+            if let p = s.phrase { base = s.lesson; index = s.index; text = p.text; start = p.start; end = p.end }
+        }
     }
     func field(_ label: String, _ value: Binding<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 6) { Text(label).font(.system(size: 12, weight: .medium)); TextField("", value: value, format: .number.precision(.fractionLength(0...2))).textFieldStyle(.plain).padding(.horizontal, 10).padding(.vertical, 8).panel(10) }
+        VStack(alignment: .leading, spacing: 6) { Text(label).font(.system(size: 12, weight: .medium)); TextField("", value: value, format: .number.precision(.fractionLength(0...3))).textFieldStyle(.plain).padding(.horizontal, 10).padding(.vertical, 8).panel(10) }
     }
 }

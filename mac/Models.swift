@@ -10,7 +10,11 @@ struct TakeResult: Codable, Identifiable {
 }
 struct Word: Codable { let start: Double; let end: Double; let word: String }
 struct Phrase: Codable { var start: Double; var end: Double; var text: String; var words: [Word]?; var practised: Bool?; var latest: TakeResult?; var takes: Int?; var revision: String? }
-struct Lesson: Codable { let id: String; var title: String; let source: String; let duration: Double; var phrases: [Phrase]; let sample: Bool?; let language: String?; let takeHistory: [TakeResult]? }
+struct Lesson: Codable {
+    let id: String; var title: String; let source: String; let duration: Double; var phrases: [Phrase]
+    let sample: Bool?; let language: String?; let takeHistory: [TakeResult]?
+    let phraseVersion: String?; let canUndoPhraseEdit: Bool?; let canRestorePhraseSplit: Bool?; let phraseEditIndex: Int?
+}
 struct LibraryItem: Codable, Identifiable {
     let id: String; let title: String; let source: String; let duration: Double; let sample: Bool; let count: Int; let practised: Int; let language: String?
     let lastPractised: Double?; let recordedSeconds: Double?; let timedTakes: Int?; let savedTakes: Int?
