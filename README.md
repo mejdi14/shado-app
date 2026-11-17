@@ -1,6 +1,6 @@
 # Shadow Studio
 
-A personal English and French shadowing app that runs on this Mac. No account, API key, subscription, or cloud audio processing. The one optional exception is PDF import in the Mac app, which uses your own ElevenLabs account to read the text aloud.
+A personal English and French shadowing app that runs on this Mac. The Mac app, browser and engine need no account, API key, subscription, or cloud audio processing, and include no analytics. The iOS and Android apps offer an optional sign-in that only links a Pro purchase across devices; you never need an account to practise, and no audio, transcripts, takes or lessons are uploaded. The one optional exception is PDF import in the Mac app, which uses your own ElevenLabs account to read the text aloud.
 
 ## Open it
 
@@ -77,7 +77,7 @@ Scores are transparent practice heuristics, not validated assessments. Use repla
 
 ## Privacy and storage
 
-Audio, recordings, model files, and lesson information stay in this folder's **data/** directory. YouTube imports contact YouTube. The speech model downloads from Hugging Face once; after it is cached, uploaded files and recordings can be processed offline. No audio is sent to a transcription provider. Voice Training sends its built-in example text to ElevenLabs when generating a new spoken example; it does not send your recordings. PDF import reads the PDF on this Mac, then sends the text it will voice (up to 20,000 characters) to ElevenLabs, where it is kept in your ElevenLabs history like any other generation; the PDF file itself and your recordings are not sent. Browser microphone permission is requested only when you click **Record a take**.
+Audio, recordings, model files, and lesson information stay in this folder's **data/** directory. YouTube imports contact YouTube. The speech model downloads from Hugging Face once; after it is cached, uploaded files and recordings can be processed offline. No audio is sent to a transcription provider. Voice Training sends its built-in example text to ElevenLabs when generating a new spoken example; it does not send your recordings. PDF import reads the PDF on this Mac, then sends the text it will voice (up to 20,000 characters) to ElevenLabs, where it is kept in your ElevenLabs history like any other generation; the PDF file itself and your recordings are not sent. Browser microphone permission is requested only when you click **Record a take**. The iOS and Android apps may contact Supabase (optional sign-in, account deletion, recording a verified Pro purchase) and the app store (billing); they never upload audio, recordings, transcripts or lessons, and no app collects analytics.
 
 In the Mac app, open **Settings → Local storage** to see the file sizes for saved lessons and takes, including the guided sample. **Lesson files** includes lesson audio and metadata such as transcripts, edits and embedded feedback. **Take files** includes recording audio and separate take metadata. The totals exclude temporary files, Voice Training progress and cached examples, and speech models. Use **Refresh Usage** after changing your library and **Show Storage Folder** to open **data/** in Finder.
 

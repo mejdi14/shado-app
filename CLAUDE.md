@@ -1,6 +1,6 @@
 # Shadow Studio
 
-Local English shadowing app for one user on one Mac. Import a YouTube link, an audio/video file or (Mac app) a PDF read aloud by ElevenLabs, transcribe it locally, split it into phrases, then record takes and get practice feedback (word accuracy, pace & rhythm, intonation). No accounts, API keys or cloud audio processing. See `README.md` for the user-facing description.
+Local English shadowing app for one user on one Mac. Import a YouTube link, an audio/video file or (Mac app) a PDF read aloud by ElevenLabs, transcribe it locally, split it into phrases, then record takes and get practice feedback (word accuracy, pace & rhythm, intonation). The engine, Mac app and browser need no account, API key or cloud audio processing, and stay free. See `README.md` for the user-facing description.
 
 ## Working rules
 
@@ -20,7 +20,10 @@ Local English shadowing app for one user on one Mac. Import a YouTube link, an a
 - `create_sample.py`: builds the built-in guided sample with the macOS `say` command.
 - `Start Shadow Studio.command`: launcher. Creates `.venv`, installs `requirements.txt`, checks FFmpeg, starts `app.py`.
 - `mac/*.swift` + `Build Mac App.command`: native SwiftUI macOS app. It launches `app.py` from this folder as its engine and talks to the same `/api/*` endpoints (token read from `GET /`). `Server.swift` (launcher + API client), `Store.swift` (state, AVFoundation playback/recording, import limits), `Views.swift` (UI), `App.swift`. The build script produces `Shadow Studio.app` here; it is generated, don't edit it. When an API route or response shape in `app.py` changes, update `mac/Models.swift` too.
-- `shado mobile/kmp-shadow-app/`: mobile app (its own git repo). Kotlin Multiplatform shared logic in `sharedLogic/.../shadow/` (API client, store, voice map analysis), native UI in `androidApp/.../shadow/` (Compose) and `iosApp/iosApp/Shadow/` (SwiftUI). It is a client of the same engine at `http://127.0.0.1:8765`: the iOS Simulator reaches it directly, Android through `adb reverse tcp:8765 tcp:8765`. The boilerplate's sign-in, payments and PostHog analytics are left in place but not wired up. When an API route or response shape changes, update `ShadowModels.kt` too.
+- `shado mobile/kmp-shadow-app/`: mobile app (its own git repo). Kotlin Multiplatform shared logic in `sharedLogic/.../shadow/` (API client, store, voice map analysis), native UI in `androidApp/.../shadow/` (Compose) and `iosApp/iosApp/Shadow/` (SwiftUI). It is a client of the same engine at `http://127.0.0.1:8765`: the iOS Simulator reaches it directly, Android (emulator or USB) through `adb reverse tcp:8765 tcp:8765`. Loopback only; no LAN or Wi-Fi pairing. When an API route or response shape changes, update `ShadowModels.kt` too.
+  - Mobile accounts and Pro: the iOS and Android apps may offer optional sign-in (Supabase) whose only purpose is linking a Pro purchase across devices, and Pro through StoreKit 2 / Google Play Billing, which unlocks only new features (progress over time, export). Everything that is free today stays free. An account is never required to practise. The Mac app, browser and engine stay account-free and free.
+  - No analytics or telemetry anywhere (PostHog was removed). English UI only.
+  - Do not rename bundle IDs, the `applicationId` or the Kotlin package; they need the owner's domain.
 - `data/`: user lessons, recordings and cached model files (`data/models`). **Never delete, reset or modify anything in `data/`.** It is the user's practice history.
 - `.venv/`, `__pycache__/`: generated. Don't edit.
 
@@ -31,7 +34,7 @@ Double-click `Start Shadow Studio.command`, or run `.venv/bin/python app.py`. Th
 ## Behaviour that must stay true
 
 - **Local only.** The server must keep accepting only `127.0.0.1:PORT` / `localhost:PORT` hosts. State-changing requests require the `x-shadow-token` header. Keep the CSP and security headers in the `local_only` middleware. Don't bind to `0.0.0.0` or add external services.
-- **Privacy.** No audio, transcripts or recordings leave the Mac. The only network use is YouTube imports, the one-time Hugging Face model download, and PDF import (`/api/pdf`), which sends the PDF's extracted text to ElevenLabs through the `elevenlabs` CLI. Recordings and takes are never sent. Keep `/api/upload` fully local.
+- **Privacy.** No audio, transcripts or recordings leave the Mac. The only network use is YouTube imports, the one-time Hugging Face model download, and PDF import (`/api/pdf`), which sends the PDF's extracted text to ElevenLabs through the `elevenlabs` CLI. Recordings and takes are never sent. Keep `/api/upload` fully local. The mobile apps may additionally contact Supabase (sign-in, account deletion, recording a verified Pro entitlement) and the app stores (billing), and nothing else. Audio, recordings, transcripts and lesson data never leave the Mac and are never uploaded to Supabase.
 - **Import limits** (keep these in sync across files when changed):
   - Max length: 30 minutes. `app.py` (`16000*1800` in `finish_import`, `>1800` in the yt-dlp `limit` filter, `duration=1801` in `upload`), the hint text in `static/index.html`, and `README.md`.
   - Max file size: 150 MB. `app.py` (`max_filesize` and the size checks in `upload` and `pdf`), `static/app.js` import form check, `static/index.html` file-drop label, `mac/Store.swift` (`submitImport`) and `mac/Views.swift` (import sheet text), the mobile app (`ShadowStore.kt` `MAX_UPLOAD`, import sheet text in `ShadowScreens.kt` and `ShadowViews.swift`), and `README.md`.
